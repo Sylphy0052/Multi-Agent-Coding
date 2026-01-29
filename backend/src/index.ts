@@ -1,10 +1,13 @@
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
 import { createStore } from "./store/index.js";
 import { EventBus } from "./events/bus.js";
 import { loadConfig } from "./config/index.js";
 import { loadPersonaSet } from "./personas/loader.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function main(): Promise<void> {
   // ─── Load Configuration ───────────────────────────────
@@ -42,7 +45,7 @@ async function main(): Promise<void> {
         password: config.auth.password,
       },
       cors: true,
-      staticDir: path.resolve("frontend/dist"),
+      staticDir: path.resolve(__dirname, "../../frontend/dist"),
     },
     { store, eventBus },
   );
@@ -72,6 +75,14 @@ async function main(): Promise<void> {
       },
       tmpDir: config.orchestrator.tmp_dir,
       pollIntervalMs: 3000,
+      taskRunner: {
+        model: config.claude.model,
+        skipPermissions: config.claude.skip_permissions,
+        outputFormat: config.claude.output_format,
+        timeoutSeconds: config.claude.timeout_seconds,
+        tmpDir: config.orchestrator.tmp_dir,
+        tmuxSessionPrefix: config.tmux.session_prefix,
+      },
     },
     store,
     eventBus,

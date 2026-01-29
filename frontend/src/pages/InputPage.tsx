@@ -9,14 +9,20 @@ export function InputPage() {
   const [repoRoot, setRepoRoot] = useState("");
   const [prompt, setPrompt] = useState("");
   const [parallelism, setParallelism] = useState(2);
+  const [constraintsText, setConstraintsText] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const constraints = constraintsText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
     createJob.mutate(
       {
         repo_root: repoRoot,
         prompt,
         parallelism,
+        constraints: constraints.length > 0 ? constraints : undefined,
       },
       {
         onSuccess: (job) => {
@@ -68,6 +74,26 @@ export function InputPage() {
             placeholder="Describe the task you want the agents to work on..."
             className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
           />
+        </div>
+
+        <div>
+          <label
+            htmlFor="constraints"
+            className="block text-sm font-medium text-gray-700 mb-1"
+          >
+            Constraints
+          </label>
+          <textarea
+            id="constraints"
+            value={constraintsText}
+            onChange={(e) => setConstraintsText(e.target.value)}
+            rows={3}
+            placeholder={"Time limit: 30 min\nCost limit: $5\nMust include unit tests"}
+            className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+          />
+          <p className="mt-1 text-sm text-gray-500">
+            One constraint per line (optional).
+          </p>
         </div>
 
         <div>

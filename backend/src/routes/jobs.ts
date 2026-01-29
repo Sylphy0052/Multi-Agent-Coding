@@ -96,6 +96,42 @@ export async function registerJobsRoutes(
     });
   });
 
+  // GET /api/jobs/:id/dashboard - Full dashboard view (job + tasks + reports + traces)
+  app.get("/api/jobs/:id/dashboard", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const jobResult = await store.getJob(id);
+    if (jobResult.isErr()) {
+      if (jobResult.error.code === "NOT_FOUND") {
+        return reply.status(404).send({ error: "Job not found" });
+      }
+      return reply.status(500).send({ error: jobResult.error.message });
+    }
+
+    const tasksResult = await store.listTasksByJob(id);
+    const reportsResult = await store.listReportsByJob(id);
+    const tracesResult = await store.getTraces(id);
+
+    const tasks = tasksResult.isOk() ? tasksResult.value : [];
+    const reports = reportsResult.isOk() ? reportsResult.value : [];
+
+    // Aggregate risks and contradictions from all reports
+    const allRisks = reports.flatMap((r) => r.risks);
+    const allContradictions = reports.flatMap((r) => r.contradictions);
+    const allNextActions = reports.flatMap((r) => r.next_actions);
+
+    return reply.send({
+      ...jobResult.value,
+      tasks,
+      reports,
+      traces: tracesResult.isOk() ? tracesResult.value : [],
+      aggregated: {
+        risks: allRisks,
+        contradictions: allContradictions,
+        next_actions: allNextActions,
+      },
+    });
+  });
+
   // POST /api/jobs/:id/cancel - Cancel a job
   app.post("/api/jobs/:id/cancel", async (request, reply) => {
     const { id } = request.params as { id: string };
