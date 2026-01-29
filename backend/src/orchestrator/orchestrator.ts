@@ -65,7 +65,42 @@ export class Orchestrator {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.poll();
+    // Run recovery before starting the poll loop
+    this.recover()
+      .catch((e) => console.error("Recovery error:", e))
+      .finally(() => this.poll());
+  }
+
+  /**
+   * Recover jobs that were in-flight when the orchestrator stopped.
+   * RUNNING/DISPATCHED jobs lose their tmux sessions on restart,
+   * so they are transitioned to WAITING_RETRY for re-processing.
+   */
+  async recover(): Promise<void> {
+    const staleStates: Job["status"][] = ["RUNNING", "DISPATCHED"];
+    for (const status of staleStates) {
+      const result = await this.store.listJobs({ status });
+      if (result.isErr()) continue;
+
+      for (const job of result.value) {
+        console.log(
+          `[recovery] job ${job.job_id} in ${status} -> WAITING_RETRY`,
+        );
+        await this.transitionJobStatus(job, status, "WAITING_RETRY");
+        await this.store.updateJob(job.job_id, {
+          last_error: `Recovered from ${status} after orchestrator restart`,
+          error_class: "TRANSIENT",
+        });
+        await this.store.appendTrace(
+          createTraceEntry(
+            job.job_id,
+            "system",
+            "RETRY",
+            `Orchestrator restart recovery: ${status} -> WAITING_RETRY`,
+          ),
+        );
+      }
+    }
   }
 
   stop(): void {
