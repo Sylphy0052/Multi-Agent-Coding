@@ -1,0 +1,52 @@
+server:
+  port: 3000
+  host: "0.0.0.0"
+
+auth:
+  username: "admin"
+  password: "changeme"
+
+orchestrator:
+  max_jobs: "auto"
+  max_jobs_hard_limit: 4
+  state_dir: ".orchestrator/state"
+  tmp_dir: "/tmp/orchestrator"
+  default_parallelism: 2
+
+estimation:
+  base_gb: 2
+  gb_per_agent: 0.8
+  gb_per_job_overhead: 1.0
+  mem_per_job_gb: 6
+  min_cpu_per_job: 4
+
+tmux:
+  session_prefix: "job"
+  default_width: 200
+  default_height: 50
+
+claude:
+  skip_permissions: true
+  model: "sonnet"
+  output_format: "json"
+  max_budget_usd: 5.0
+  timeout_seconds: 600
+
+git:
+  main_branch: "main"
+  develop_branch: "develop"
+  merge_policy: "merge_commit"
+  lock_timeout_ms: 30000
+  lock_retries: 3
+
+retry:
+  max_retries: 10
+  backoff_sequence: [10, 30, 60, 120, 240, 480, 600]
+  backoff_cap: 600
+
+personas:
+  active_set: "default"
+  directory: "config/personas"
+
+logging:
+  level: "info"

@@ -1,0 +1,7 @@
+persona_set_id: "default"
+description: "Default persona set for MVP"
+
+roles:
+  ui_chan: "ui-chan.yaml"
+  ai_chan: "ai-chan.yaml"
+  kobito: "kobito.yaml"
