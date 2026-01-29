@@ -1,5 +1,5 @@
 import { ok, err, Result } from "neverthrow";
-import type { Report, Phase, Finding, ArtifactUpdate } from "@multi-agent/shared";
+import type { Report, Phase, Finding, ArtifactUpdate, SkillCandidate } from "@multi-agent/shared";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -10,6 +10,7 @@ export interface ParsedClaudeOutput {
   contradictions: string[];
   next_actions: string[];
   artifact_updates: ArtifactUpdate[];
+  skill_candidate?: SkillCandidate | null;
 }
 
 export class ParseError extends Error {
@@ -56,6 +57,7 @@ export function parseClaudeOutput(
       contradictions: asStringArray(parsed.contradictions),
       next_actions: asStringArray(parsed.next_actions),
       artifact_updates: asArtifactUpdates(parsed.artifact_updates),
+      skill_candidate: asSkillCandidate(parsed.skill_candidate),
     });
   } catch (e) {
     return err(new ParseError(`Failed to parse JSON: ${String(e)}`));
@@ -81,6 +83,7 @@ export function toReport(
     contradictions: parsed.contradictions,
     next_actions: parsed.next_actions,
     artifact_updates: parsed.artifact_updates,
+    skill_candidate: parsed.skill_candidate ?? null,
     created_at: new Date().toISOString(),
   };
 }
@@ -121,4 +124,15 @@ function asArtifactUpdates(value: unknown): ArtifactUpdate[] {
       path: asString(v.path, ""),
       change_summary: asString(v.change_summary, ""),
     }));
+}
+
+function asSkillCandidate(value: unknown): SkillCandidate | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.found !== "boolean") return null;
+  return {
+    found: v.found,
+    description: asString(v.description, ""),
+    reason: asString(v.reason, ""),
+  };
 }

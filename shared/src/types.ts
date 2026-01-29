@@ -55,6 +55,7 @@ export interface Job {
   current_phase: Phase | null;
   artifacts: JobArtifacts;
   git: JobGit;
+  constraints: string[];
   retry_count: number;
   last_error: string | null;
   error_class: "TRANSIENT" | "PERMANENT" | null;
@@ -97,6 +98,12 @@ export interface ArtifactUpdate {
   change_summary: string;
 }
 
+export interface SkillCandidate {
+  found: boolean;
+  description: string;
+  reason: string;
+}
+
 export interface Report {
   task_id: string;
   job_id: string;
@@ -107,6 +114,7 @@ export interface Report {
   contradictions: string[];
   next_actions: string[];
   artifact_updates: ArtifactUpdate[];
+  skill_candidate: SkillCandidate | null;
   created_at: string;
 }
 

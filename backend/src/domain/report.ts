@@ -1,4 +1,4 @@
-import type { Report, Phase, Finding, ArtifactUpdate } from "@multi-agent/shared";
+import type { Report, Phase, Finding, ArtifactUpdate, SkillCandidate } from "@multi-agent/shared";
 
 // ─── Factory ────────────────────────────────────────────
 
@@ -12,6 +12,7 @@ export interface CreateReportInput {
   contradictions?: string[];
   next_actions?: string[];
   artifact_updates?: ArtifactUpdate[];
+  skill_candidate?: SkillCandidate | null;
 }
 
 export function createReport(input: CreateReportInput): Report {
@@ -25,6 +26,7 @@ export function createReport(input: CreateReportInput): Report {
     contradictions: input.contradictions ?? [],
     next_actions: input.next_actions ?? [],
     artifact_updates: input.artifact_updates ?? [],
+    skill_candidate: input.skill_candidate ?? null,
     created_at: new Date().toISOString(),
   };
 }

@@ -79,6 +79,7 @@ export const JobSchema = z.object({
   parallelism: z.number(),
   persona_set_id: z.string(),
   repo_root: z.string(),
+  constraints: z.array(z.string()),
   current_phase: PhaseSchema.nullable(),
   artifacts: JobArtifactsSchema,
   git: JobGitSchema,
@@ -116,6 +117,12 @@ export const ArtifactUpdateSchema = z.object({
   change_summary: z.string(),
 });
 
+export const SkillCandidateSchema = z.object({
+  found: z.boolean(),
+  description: z.string(),
+  reason: z.string(),
+});
+
 export const ReportSchema = z.object({
   task_id: z.string(),
   job_id: z.string(),
@@ -126,6 +133,7 @@ export const ReportSchema = z.object({
   contradictions: z.array(z.string()),
   next_actions: z.array(z.string()),
   artifact_updates: z.array(ArtifactUpdateSchema),
+  skill_candidate: SkillCandidateSchema.nullable(),
   created_at: z.string(),
 });
 

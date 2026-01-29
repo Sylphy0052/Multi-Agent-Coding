@@ -68,6 +68,7 @@ export function createJob(input: CreateJobInput): Job {
     parallelism: input.parallelism ?? 2,
     persona_set_id: input.persona_set_id ?? "default",
     repo_root: input.repo_root,
+    constraints: input.constraints ?? [],
     current_phase: null,
     artifacts: {
       spec_md_path: buildArtifactPath(ARTIFACT_PATH_TEMPLATE.spec, jobId),
