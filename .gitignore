@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+shared/dist/
+backend/dist/
+frontend/dist/
+
+# Environment
+.env
+.env.local
+
+# State directory (runtime data)
+.orchestrator/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp
+/tmp/
+*.tmp
+
+# TypeScript incremental
+*.tsbuildinfo
+
+# Test coverage
+coverage/
