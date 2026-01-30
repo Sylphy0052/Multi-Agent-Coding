@@ -102,6 +102,21 @@ export interface SkillCandidate {
   found: boolean;
   description: string;
   reason: string;
+  when_to_use?: string;
+  steps?: string[];
+  output_contract?: string[];
+  pitfalls?: string[];
+}
+
+export type GateVerdict = "PASS" | "FAIL";
+
+export interface GateResult {
+  phase: Phase;
+  verdict: GateVerdict;
+  issues: string[];
+  fix_instructions: string[];
+  test_requirements: string[];
+  memory_update_proposals: MemoryUpdate[];
 }
 
 export interface Report {
@@ -115,7 +130,61 @@ export interface Report {
   next_actions: string[];
   artifact_updates: ArtifactUpdate[];
   skill_candidate: SkillCandidate | null;
+  gate_verdict?: GateVerdict;
+  memory_updates?: MemoryUpdate[];
   created_at: string;
+}
+
+// ─── Memory ────────────────────────────────────────────────
+
+export type MemoryType = "decision" | "convention" | "known_issue" | "glossary";
+export type MemoryCategory = "hard" | "soft";
+
+export interface MemoryUpdate {
+  id: string;
+  type: MemoryType;
+  category: MemoryCategory;
+  title: string;
+  body: string;
+  rationale: string;
+  confidence: number;
+  sources: string[];
+  keywords: string[];
+  proposed_by: string;
+  proposed_at: string;
+  status: "proposed" | "audited" | "approved" | "rejected";
+  review_due?: string;
+}
+
+// ─── Asset ─────────────────────────────────────────────────
+
+export type AssetType = "screenshot";
+export type AnalysisStatus = "pending" | "done" | "error";
+
+export interface UIFinding {
+  severity: "high" | "med" | "low";
+  title: string;
+  detail: string;
+  evidence: string;
+}
+
+export interface AssetAnalysis {
+  status: AnalysisStatus;
+  ocr_text: string;
+  summary: string;
+  ui_findings: UIFinding[];
+  analyzed_at?: string;
+}
+
+export interface Asset {
+  asset_id: string;
+  job_id: string;
+  type: AssetType;
+  filename: string;
+  mime_type: string;
+  uploaded_at: string;
+  tags: string[];
+  analysis: AssetAnalysis;
 }
 
 // ─── Trace ──────────────────────────────────────────────
@@ -126,6 +195,8 @@ export type TraceActor =
   | "ai-chan"
   | "system"
   | "git"
+  | "researcher"
+  | "auditor"
   | `kobito-${number}`;
 
 export type TraceEventType =
@@ -141,7 +212,11 @@ export type TraceEventType =
   | "APPROVED"
   | "REJECTED"
   | "QUEUED"
-  | "RETRY";
+  | "RETRY"
+  | "GATE_PASS"
+  | "GATE_FAIL"
+  | "MEMORY_UPDATED"
+  | "ASSET_ANALYZED";
 
 export interface TraceRefs {
   task_id?: string;

@@ -48,5 +48,14 @@ personas:
   active_set: "default"
   directory: "config/personas"
 
+memory:
+  directory: "memory"
+
+skills:
+  directory: "skills"
+
+templates:
+  context_template: "templates/context_template.md"
+
 logging:
   level: "info"

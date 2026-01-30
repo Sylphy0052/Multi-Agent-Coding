@@ -5,3 +5,5 @@ roles:
   ui_chan: "ui-chan.yaml"
   ai_chan: "ai-chan.yaml"
   kobito: "kobito.yaml"
+  researcher: "researcher.yaml"
+  auditor: "auditor.yaml"

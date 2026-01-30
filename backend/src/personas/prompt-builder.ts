@@ -100,6 +100,89 @@ export function buildKobitoTaskPrompt(
 }
 
 /**
+ * Build a prompt for the Researcher role.
+ */
+export function buildResearcherPrompt(
+  personas: LoadedPersonaSet,
+  context: TaskContext,
+  contextMd: string,
+): string {
+  const profile = personas.researcher;
+  if (!profile) return buildKobitoTaskPrompt(personas, context);
+
+  return [
+    `# Role: ${profile.display_name ?? profile.role}`,
+    profile.description,
+    "",
+    "## Tone & Style",
+    profile.tone_style,
+    "",
+    "## Job Context",
+    contextMd,
+    "",
+    "## Investigation Order",
+    ...((profile as Record<string, unknown>).investigation_order as string[] ?? []).map((s, i) => `${i + 1}. ${s}`),
+    "",
+    "## Objective",
+    context.objective,
+    "",
+    ...(context.inputs.length > 0 ? ["## Inputs", ...context.inputs.map(i => `- ${i}`), ""] : []),
+    ...(context.constraints.length > 0 ? ["## Constraints", ...context.constraints.map(c => `- ${c}`), ""] : []),
+    "## Working Directory",
+    context.repo_root,
+    "",
+    "## Output Format",
+    (profile as Record<string, unknown>).output_format as string ?? "",
+  ].join("\n");
+}
+
+/**
+ * Build a prompt for the Auditor role with phase-specific gate checklist.
+ */
+export function buildAuditorPrompt(
+  personas: LoadedPersonaSet,
+  context: TaskContext,
+  contextMd: string,
+): string {
+  const profile = personas.auditor;
+  if (!profile) return buildKobitoTaskPrompt(personas, context);
+
+  const checklists = (profile as Record<string, unknown>).gate_checklists as Record<string, string[]> | undefined;
+  const phaseChecklist = checklists?.[context.phase] ?? [];
+
+  return [
+    `# Role: ${profile.display_name ?? profile.role}`,
+    profile.description,
+    "",
+    "## Tone & Style",
+    profile.tone_style,
+    "",
+    "## Job Context",
+    contextMd,
+    "",
+    "## Phase",
+    context.phase,
+    "",
+    "## Gate Checklist",
+    ...phaseChecklist.map((item, i) => `${i + 1}. ${item}`),
+    "",
+    "## Objective",
+    context.objective,
+    "",
+    ...(context.inputs.length > 0 ? ["## Inputs", ...context.inputs.map(i => `- ${i}`), ""] : []),
+    "## Working Directory",
+    context.repo_root,
+    "",
+    "## Output Format",
+    (profile as Record<string, unknown>).output_format as string ?? "",
+    "",
+    "## IMPORTANT",
+    "You MUST output either 'PASS' or 'FAIL' as the Gate Verdict.",
+    "If FAIL, provide specific fix instructions that can be completed in a single task.",
+  ].join("\n");
+}
+
+/**
  * Build a prompt for UI-chan to summarize phase results for user approval.
  */
 export function buildUiChanSummaryPrompt(

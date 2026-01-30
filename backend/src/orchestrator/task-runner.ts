@@ -6,9 +6,18 @@ import { transitionTask } from "../domain/task.js";
 import { createTraceEntry } from "../domain/trace.js";
 import { TmuxController, type TmuxSession, type TmuxPane } from "../tmux/controller.js";
 import { ClaudeRunner, type ClaudeTaskConfig } from "../tmux/claude-runner.js";
-import { parseClaudeOutput, toReport } from "../tmux/output-parser.js";
-import { buildKobitoTaskPrompt } from "../personas/prompt-builder.js";
+import {
+  buildKobitoTaskPrompt,
+  buildResearcherPrompt,
+  buildAuditorPrompt,
+  type TaskContext,
+} from "../personas/prompt-builder.js";
 import type { LoadedPersonaSet } from "../personas/loader.js";
+import { TaskWatcher } from "../watcher/task-watcher.js";
+import type { ContextManager } from "../context/context-manager.js";
+import type { MemoryProvider } from "../memory/provider.js";
+import type { SkillsRegistry } from "../skills/registry.js";
+import type { AssetStore } from "../assets/store.js";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -30,24 +39,42 @@ export interface JobSession {
 
 // ─── Task Runner ────────────────────────────────────────
 
+export interface TaskRunnerExtDeps {
+  contextManager?: ContextManager;
+  memoryProvider?: MemoryProvider;
+  skillsRegistry?: SkillsRegistry;
+  assetStore?: AssetStore;
+}
+
 export class TaskRunner {
   private readonly tmux: TmuxController;
   private readonly claude: ClaudeRunner;
   private readonly activeSessions = new Map<string, JobSession>();
+  private readonly contextManager?: ContextManager;
+  private readonly memoryProvider?: MemoryProvider;
+  private readonly skillsRegistry?: SkillsRegistry;
+  private readonly assetStore?: AssetStore;
 
   constructor(
     private readonly config: TaskRunnerConfig,
     private readonly store: IStateStore,
     private readonly eventBus: EventBus,
     private readonly personas: LoadedPersonaSet,
+    private readonly taskWatcher: TaskWatcher,
+    extDeps?: TaskRunnerExtDeps,
   ) {
     this.tmux = new TmuxController(config.tmuxSessionPrefix);
     this.claude = new ClaudeRunner(this.tmux);
+    this.contextManager = extDeps?.contextManager;
+    this.memoryProvider = extDeps?.memoryProvider;
+    this.skillsRegistry = extDeps?.skillsRegistry;
+    this.assetStore = extDeps?.assetStore;
   }
 
   /**
    * Launch all PENDING tasks for a job: create tmux session and run Claude CLI.
    * Transitions tasks PENDING -> ASSIGNED -> RUNNING.
+   * After launching, starts TaskWatcher for the job.
    */
   async launchTasks(job: Job, tasks: Task[]): Promise<Result<void, Error>> {
     const pendingTasks = tasks.filter((t) => t.status === "PENDING");
@@ -91,15 +118,8 @@ export class TaskRunner {
         updated_at: assignResult.value.updated_at,
       });
 
-      // Build prompt
-      const prompt = buildKobitoTaskPrompt(this.personas, {
-        phase: task.phase,
-        objective: task.objective,
-        inputs: task.inputs,
-        constraints: task.constraints,
-        acceptance_criteria: task.acceptance_criteria,
-        repo_root: job.repo_root,
-      });
+      // Build prompt with context, memory, and skills injection
+      const prompt = await this.buildPromptForTask(job, task);
 
       // Launch Claude CLI
       const launchConfig: ClaudeTaskConfig = {
@@ -149,109 +169,19 @@ export class TaskRunner {
       });
     }
 
+    // Start watching for task completion via filesystem events
+    await this.taskWatcher.watchJob(job.job_id);
+
     return ok(undefined);
   }
 
   /**
-   * Poll all RUNNING tasks for a job to check for completion.
-   * Collects output, creates reports, and transitions to COMPLETED or FAILED.
-   * Returns true if all tasks are done (all in terminal state).
-   */
-  async pollTasks(job: Job): Promise<Result<boolean, Error>> {
-    const tasksResult = await this.store.listTasksByJob(job.job_id);
-    if (tasksResult.isErr()) return err(tasksResult.error);
-
-    const phase = job.current_phase;
-    if (!phase) return ok(true);
-
-    const phaseTasks = tasksResult.value.filter((t) => t.phase === phase);
-    const runningTasks = phaseTasks.filter((t) => t.status === "RUNNING");
-
-    for (const task of runningTasks) {
-      const isDone = await this.claude.isTaskDone(
-        this.config.tmpDir,
-        job.job_id,
-        task.task_id,
-      );
-
-      if (!isDone) continue;
-
-      // Read and parse output
-      const outputResult = await this.claude.readTaskOutput(
-        this.config.tmpDir,
-        job.job_id,
-        task.task_id,
-      );
-
-      if (outputResult.isErr()) {
-        await this.failTask(job, task, `Failed to read output: ${outputResult.error.message}`);
-        continue;
-      }
-
-      const parseResult = parseClaudeOutput(outputResult.value);
-      if (parseResult.isErr()) {
-        // If parsing fails, create a basic report from raw output
-        const basicReport = toReport(
-          {
-            summary: outputResult.value.slice(0, 500),
-            findings: [],
-            risks: [],
-            contradictions: [],
-            next_actions: [],
-            artifact_updates: [],
-          },
-          task.task_id,
-          job.job_id,
-          phase,
-        );
-        await this.store.createReport(basicReport);
-      } else {
-        const report = toReport(parseResult.value, task.task_id, job.job_id, phase);
-        await this.store.createReport(report);
-      }
-
-      // Transition RUNNING -> COMPLETED
-      await this.store.updateTask(task.task_id, job.job_id, {
-        status: "COMPLETED",
-        updated_at: new Date().toISOString(),
-      });
-
-      await this.store.appendTrace(
-        createTraceEntry(
-          job.job_id,
-          task.assignee as `kobito-${number}`,
-          "REPORTED",
-          `Task completed: ${task.objective.slice(0, 100)}`,
-          { task_id: task.task_id },
-        ),
-      );
-
-      this.eventBus.emit({
-        type: "task:status_changed",
-        job_id: job.job_id,
-        task_id: task.task_id,
-        from: "RUNNING",
-        to: "COMPLETED",
-        timestamp: new Date().toISOString(),
-      });
-    }
-
-    // Check if all phase tasks are done
-    const updatedTasks = await this.store.listTasksByJob(job.job_id);
-    if (updatedTasks.isErr()) return err(updatedTasks.error);
-
-    const updatedPhaseTasks = updatedTasks.value.filter((t) => t.phase === phase);
-    const allDone = updatedPhaseTasks.every(
-      (t) => t.status === "COMPLETED" || t.status === "FAILED" || t.status === "CANCELED",
-    );
-
-    return ok(allDone);
-  }
-
-  /**
    * Clean up tmux session for a job.
+   * Stops the TaskWatcher before killing the tmux session.
    */
   async cleanup(jobId: string): Promise<void> {
+    await this.taskWatcher.unwatchJob(jobId);
+
     const jobSession = this.activeSessions.get(jobId);
     if (jobSession) {
       await this.tmux.killSession(jobSession.session);
@@ -266,29 +196,92 @@ export class TaskRunner {
     return this.activeSessions.has(jobId);
   }
 
-  private async failTask(job: Job, task: Task, error: string): Promise<void> {
-    await this.store.updateTask(task.task_id, job.job_id, {
-      status: "FAILED",
-      updated_at: new Date().toISOString(),
-    });
+  /**
+   * Build a prompt for a task, selecting the appropriate role-based builder
+   * and injecting context, memory, and skills.
+   */
+  private async buildPromptForTask(job: Job, task: Task): Promise<string> {
+    const taskContext: TaskContext = {
+      phase: task.phase,
+      objective: task.objective,
+      inputs: task.inputs,
+      constraints: task.constraints,
+      acceptance_criteria: task.acceptance_criteria,
+      repo_root: job.repo_root,
+    };
 
-    await this.store.appendTrace(
-      createTraceEntry(
-        job.job_id,
-        task.assignee as `kobito-${number}`,
-        "FAILED",
-        `Task failed: ${error.slice(0, 200)}`,
-        { task_id: task.task_id },
-      ),
-    );
+    // Gather context.md content
+    let contextMd = "";
+    if (this.contextManager) {
+      try {
+        contextMd = await this.contextManager.getContextForPrompt(job.job_id);
+      } catch {
+        // Non-fatal: proceed without context
+      }
+    }
 
-    this.eventBus.emit({
-      type: "task:status_changed",
-      job_id: job.job_id,
-      task_id: task.task_id,
-      from: "RUNNING",
-      to: "FAILED",
-      timestamp: new Date().toISOString(),
-    });
+    // Gather memory context
+    let memoryContext = "";
+    if (this.memoryProvider) {
+      try {
+        memoryContext = await this.memoryProvider.getContext({
+          repoSummary: job.repo_root,
+          jobGoal: job.user_prompt,
+          phase: task.phase,
+          keywords: job.user_prompt.split(/\s+/).slice(0, 10),
+        });
+      } catch {
+        // Non-fatal: proceed without memory
+      }
+    }
+
+    // Gather skills
+    let skillsSection = "";
+    if (this.skillsRegistry) {
+      let hasScreenshots = false;
+      if (this.assetStore) {
+        try {
+          const assets = await this.assetStore.listAssets(job.job_id);
+          hasScreenshots = assets.length > 0;
+        } catch {
+          // Non-fatal: proceed without screenshot info
+        }
+      }
+      const selected = this.skillsRegistry.select({
+        phase: task.phase,
+        hasScreenshots,
+      });
+      if (selected.length > 0) {
+        skillsSection = selected.map((s) => [
+          `### Skill: ${s.title}`,
+          `**When to use:** ${s.when_to_use}`,
+          `**Steps:** ${s.steps.map((st, i) => `${i + 1}. ${st}`).join("\n")}`,
+          `**Output Contract:** ${s.output_contract.join(", ")}`,
+          `**Pitfalls:** ${s.pitfalls.join(", ")}`,
+        ].join("\n")).join("\n\n");
+      }
+    }
+
+    // Build the enriched context for injection
+    const enrichedContext = [
+      contextMd,
+      memoryContext ? `\n## Memory Context\n${memoryContext}` : "",
+      skillsSection ? `\n## Skills Applied\n${skillsSection}` : "",
+    ].filter(Boolean).join("\n");
+
+    // Select prompt builder based on assignee role
+    if (task.assignee === "researcher") {
+      return buildResearcherPrompt(this.personas, taskContext, enrichedContext);
+    }
+    if (task.assignee === "auditor") {
+      return buildAuditorPrompt(this.personas, taskContext, enrichedContext);
+    }
+
+    // Default: Kobito worker prompt with context injection
+    const basePrompt = buildKobitoTaskPrompt(this.personas, taskContext);
+    if (enrichedContext) {
+      return `${basePrompt}\n\n## Job Context\n${enrichedContext}`;
+    }
+    return basePrompt;
   }
 }

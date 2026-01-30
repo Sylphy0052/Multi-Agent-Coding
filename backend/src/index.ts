@@ -6,6 +6,12 @@ import { EventBus } from "./events/bus.js";
 import { loadConfig } from "./config/index.js";
 import { loadPersonaSet } from "./personas/loader.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { TaskWatcher } from "./watcher/task-watcher.js";
+import { AssetStore } from "./assets/store.js";
+import { ContextManager } from "./context/context-manager.js";
+import { LocalMdMemoryProvider } from "./memory/local-md.js";
+import { SkillsRegistry } from "./skills/registry.js";
+import { AnalysisPipeline } from "./assets/analyzer/pipeline.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +43,36 @@ async function main(): Promise<void> {
   // ─── Event Bus ────────────────────────────────────────
   const eventBus = new EventBus();
 
+  // ─── Initialize New Components ──────────────────────
+  const assetStore = new AssetStore(config.orchestrator.state_dir);
+
+  const templatePath = path.resolve(config.templates.context_template);
+  const contextManager = new ContextManager(
+    config.orchestrator.state_dir,
+    templatePath,
+  );
+
+  const memoryProvider = new LocalMdMemoryProvider(
+    path.resolve(config.memory.directory),
+  );
+  await memoryProvider.initialize();
+  console.log("[memory] initialized");
+
+  const skillsRegistry = new SkillsRegistry(
+    path.resolve(config.skills.directory),
+  );
+  await skillsRegistry.loadAll();
+  console.log(`[skills] loaded ${skillsRegistry.listAll().length} skills`);
+
+  const analysisPipeline = new AnalysisPipeline(
+    assetStore,
+    contextManager,
+    eventBus,
+    config.orchestrator.state_dir,
+  );
+  analysisPipeline.registerListeners();
+  console.log("[analysis-pipeline] listeners registered");
+
   // ─── Build App ────────────────────────────────────────
   const app = await buildApp(
     {
@@ -47,7 +83,7 @@ async function main(): Promise<void> {
       cors: true,
       staticDir: path.resolve(__dirname, "../../frontend/dist"),
     },
-    { store, eventBus },
+    { store, eventBus, assetStore, memoryProvider, skillsRegistry },
   );
 
   // ─── Start Orchestrator ───────────────────────────────
@@ -55,6 +91,16 @@ async function main(): Promise<void> {
     typeof config.orchestrator.max_jobs === "number"
       ? config.orchestrator.max_jobs
       : 2;
+
+  const taskWatcher = new TaskWatcher(
+    {
+      tmpDir: config.orchestrator.tmp_dir,
+      usePolling: true,
+      pollingInterval: 1000,
+    },
+    store,
+    eventBus,
+  );
 
   const orchestrator = new Orchestrator(
     {
@@ -74,7 +120,6 @@ async function main(): Promise<void> {
         developBranch: config.git.develop_branch,
       },
       tmpDir: config.orchestrator.tmp_dir,
-      pollIntervalMs: 3000,
       taskRunner: {
         model: config.claude.model,
         skipPermissions: config.claude.skip_permissions,
@@ -87,6 +132,8 @@ async function main(): Promise<void> {
     store,
     eventBus,
     personas,
+    taskWatcher,
+    { contextManager, memoryProvider, skillsRegistry, assetStore },
   );
 
   orchestrator.start();
@@ -105,6 +152,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     console.log("Shutting down...");
     orchestrator.stop();
+    await taskWatcher.close();
     await app.close();
     process.exit(0);
   };

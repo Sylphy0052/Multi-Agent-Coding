@@ -12,6 +12,8 @@ export interface PersonaSet {
     ui_chan: string;
     ai_chan: string;
     kobito: string;
+    researcher?: string;
+    auditor?: string;
   };
 }
 
@@ -29,6 +31,8 @@ export interface LoadedPersonaSet {
   ui_chan: PersonaProfile;
   ai_chan: PersonaProfile;
   kobito: PersonaProfile;
+  researcher?: PersonaProfile;
+  auditor?: PersonaProfile;
 }
 
 export class PersonaLoadError extends Error {
@@ -80,10 +84,28 @@ export function loadPersonaSet(
   const kobitoResult = loadProfile(set.roles.kobito);
   if (kobitoResult.isErr()) return err(kobitoResult.error);
 
+  // Optional sub-roles: researcher and auditor (no error if missing)
+  const loadOptionalProfile = (filename: string | undefined): PersonaProfile | undefined => {
+    if (!filename) return undefined;
+    const profilePath = path.join(directory, filename);
+    if (!fs.existsSync(profilePath)) return undefined;
+    try {
+      const content = fs.readFileSync(profilePath, "utf-8");
+      return yaml.load(content) as PersonaProfile;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const researcher = loadOptionalProfile(set.roles.researcher);
+  const auditor = loadOptionalProfile(set.roles.auditor);
+
   return ok({
     set,
     ui_chan: uiChanResult.value,
     ai_chan: aiChanResult.value,
     kobito: kobitoResult.value,
+    ...(researcher ? { researcher } : {}),
+    ...(auditor ? { auditor } : {}),
   });
 }

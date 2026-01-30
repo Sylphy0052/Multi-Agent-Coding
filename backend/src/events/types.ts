@@ -7,6 +7,13 @@ export type EventType =
   | "job:failed"
   | "task:created"
   | "task:status_changed"
+  | "task:started"
+  | "task:done"
+  | "task:error"
+  | "asset:uploaded"
+  | "asset:analyzed"
+  | "memory:updated"
+  | "skill:updated"
   | "phase:awaiting_approval"
   | "phase:approved"
   | "phase:rejected"
@@ -50,6 +57,52 @@ export interface TaskStatusChangedEvent extends BaseEvent {
   to: TaskStatus;
 }
 
+export interface TaskStartedEvent extends BaseEvent {
+  type: "task:started";
+  task_id: string;
+  phase: Phase;
+  role: string;
+}
+
+export interface TaskDoneEvent extends BaseEvent {
+  type: "task:done";
+  task_id: string;
+  phase: Phase;
+  role: string;
+  artifacts: string[];
+}
+
+export interface TaskErrorEvent extends BaseEvent {
+  type: "task:error";
+  task_id: string;
+  error: string;
+  stderr_tail?: string;
+}
+
+export interface AssetUploadedEvent extends BaseEvent {
+  type: "asset:uploaded";
+  asset_id: string;
+  asset_type: string;
+}
+
+export interface AssetAnalyzedEvent extends BaseEvent {
+  type: "asset:analyzed";
+  asset_id: string;
+  ocr_text: string;
+  summary: string;
+}
+
+export interface MemoryUpdatedEvent extends BaseEvent {
+  type: "memory:updated";
+  updates: Array<{ type: string; title: string }>;
+}
+
+export interface SkillUpdatedEvent extends BaseEvent {
+  type: "skill:updated";
+  skill_id: string;
+  version: string;
+}
+
 export interface PhaseAwaitingApprovalEvent extends BaseEvent {
   type: "phase:awaiting_approval";
   phase: Phase;
@@ -81,6 +134,13 @@ export type BusEvent =
   | JobFailedEvent
   | TaskCreatedEvent
   | TaskStatusChangedEvent
+  | TaskStartedEvent
+  | TaskDoneEvent
+  | TaskErrorEvent
+  | AssetUploadedEvent
+  | AssetAnalyzedEvent
+  | MemoryUpdatedEvent
+  | SkillUpdatedEvent
   | PhaseAwaitingApprovalEvent
   | PhaseApprovedEvent
   | PhaseRejectedEvent

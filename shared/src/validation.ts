@@ -121,7 +121,13 @@ export const SkillCandidateSchema = z.object({
   found: z.boolean(),
   description: z.string(),
   reason: z.string(),
+  when_to_use: z.string().optional(),
+  steps: z.array(z.string()).optional(),
+  output_contract: z.array(z.string()).optional(),
+  pitfalls: z.array(z.string()).optional(),
 });
+
+export const GateVerdictSchema = z.enum(["PASS", "FAIL"]);
 
 export const ReportSchema = z.object({
   task_id: z.string(),
@@ -134,13 +140,87 @@ export const ReportSchema = z.object({
   next_actions: z.array(z.string()),
   artifact_updates: z.array(ArtifactUpdateSchema),
   skill_candidate: SkillCandidateSchema.nullable(),
+  gate_verdict: GateVerdictSchema.optional(),
+  memory_updates: z.array(z.lazy(() => MemoryUpdateSchema)).optional(),
   created_at: z.string(),
+});
+
+// ─── Memory Schemas ────────────────────────────────────────
+
+export const MemoryTypeSchema = z.enum([
+  "decision",
+  "convention",
+  "known_issue",
+  "glossary",
+]);
+
+export const MemoryCategorySchema = z.enum(["hard", "soft"]);
+
+export const MemoryUpdateSchema = z.object({
+  id: z.string(),
+  type: MemoryTypeSchema,
+  category: MemoryCategorySchema,
+  title: z.string().min(1),
+  body: z.string().min(1),
+  rationale: z.string(),
+  confidence: z.number().min(0).max(1),
+  sources: z.array(z.string()),
+  keywords: z.array(z.string()),
+  proposed_by: z.string(),
+  proposed_at: z.string(),
+  status: z.enum(["proposed", "audited", "approved", "rejected"]),
+  review_due: z.string().optional(),
+});
+
+export const ProposeMemoryUpdateSchema = MemoryUpdateSchema.omit({
+  id: true,
+  status: true,
+  proposed_at: true,
+});
+
+// ─── Asset Schemas ─────────────────────────────────────────
+
+export const UIFindingSchema = z.object({
+  severity: z.enum(["high", "med", "low"]),
+  title: z.string(),
+  detail: z.string(),
+  evidence: z.string(),
+});
+
+export const AssetAnalysisSchema = z.object({
+  status: z.enum(["pending", "done", "error"]),
+  ocr_text: z.string(),
+  summary: z.string(),
+  ui_findings: z.array(UIFindingSchema),
+  analyzed_at: z.string().optional(),
+});
+
+export const AssetSchema = z.object({
+  asset_id: z.string(),
+  job_id: z.string(),
+  type: z.literal("screenshot"),
+  filename: z.string(),
+  mime_type: z.string(),
+  uploaded_at: z.string(),
+  tags: z.array(z.string()),
+  analysis: AssetAnalysisSchema,
+});
+
+// ─── Gate Schemas ──────────────────────────────────────────
+
+export const GateResultSchema = z.object({
+  phase: PhaseSchema,
+  verdict: GateVerdictSchema,
+  issues: z.array(z.string()),
+  fix_instructions: z.array(z.string()),
+  test_requirements: z.array(z.string()),
+  memory_update_proposals: z.array(MemoryUpdateSchema),
 });
 
 // ─── Trace Schema ───────────────────────────────────────
 
 export const TraceActorSchema = z.union([
-  z.enum(["web", "ui-chan", "ai-chan", "system", "git"]),
+  z.enum(["web", "ui-chan", "ai-chan", "system", "git", "researcher", "auditor"]),
   z.string().regex(/^kobito-\d+$/),
 ]);
 
@@ -158,6 +238,10 @@ export const TraceEventTypeSchema = z.enum([
   "REJECTED",
   "QUEUED",
   "RETRY",
+  "GATE_PASS",
+  "GATE_FAIL",
+  "MEMORY_UPDATED",
+  "ASSET_ANALYZED",
 ]);
 
 export const TraceRefsSchema = z.object({

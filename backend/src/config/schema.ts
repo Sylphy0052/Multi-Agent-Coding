@@ -59,6 +59,18 @@ export const PersonasConfigSchema = z.object({
   directory: z.string().default("config/personas"),
 });
 
+export const MemoryConfigSchema = z.object({
+  directory: z.string().default("memory"),
+});
+
+export const SkillsConfigSchema = z.object({
+  directory: z.string().default("skills"),
+});
+
+export const TemplatesConfigSchema = z.object({
+  context_template: z.string().default("templates/context_template.md"),
+});
+
 export const LoggingConfigSchema = z.object({
   level: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
@@ -73,6 +85,9 @@ export const AppConfigSchema = z.object({
   git: GitConfigSchema.default({}),
   retry: RetryConfigSchema.default({}),
   personas: PersonasConfigSchema.default({}),
+  memory: MemoryConfigSchema.default({}),
+  skills: SkillsConfigSchema.default({}),
+  templates: TemplatesConfigSchema.default({}),
   logging: LoggingConfigSchema.default({}),
 });
 
@@ -86,4 +101,7 @@ export type ClaudeConfig = z.infer<typeof ClaudeConfigSchema>;
 export type GitConfig = z.infer<typeof GitConfigSchema>;
 export type RetryConfig = z.infer<typeof RetryConfigSchema>;
 export type PersonasConfig = z.infer<typeof PersonasConfigSchema>;
+export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+export type TemplatesConfig = z.infer<typeof TemplatesConfigSchema>;
 export type LoggingConfig = z.infer<typeof LoggingConfigSchema>;

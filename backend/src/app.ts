@@ -1,13 +1,20 @@
 import * as fs from "node:fs";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { registerBasicAuth } from "./auth/basic-auth.js";
 import { registerJobsRoutes } from "./routes/jobs.js";
 import { registerPhasesRoutes } from "./routes/phases.js";
 import { registerEventsRoutes } from "./routes/events.js";
+import { registerAssetsRoutes } from "./routes/assets.js";
+import { registerMemoryRoutes } from "./routes/memory.js";
+import { registerSkillsRoutes } from "./routes/skills.js";
 import { EventBus } from "./events/bus.js";
 import type { IStateStore } from "./store/interface.js";
+import type { AssetStore } from "./assets/store.js";
+import type { MemoryProvider } from "./memory/provider.js";
+import type { SkillsRegistry } from "./skills/registry.js";
 
 export interface AppConfig {
   auth?: {
@@ -22,6 +29,9 @@ export interface AppConfig {
 export interface AppDeps {
   store: IStateStore;
   eventBus?: EventBus;
+  assetStore?: AssetStore;
+  memoryProvider?: MemoryProvider;
+  skillsRegistry?: SkillsRegistry;
 }
 
 export async function buildApp(
@@ -47,6 +57,11 @@ export async function buildApp(
     ]);
   }
 
+  // Multipart (file upload support)
+  await app.register(multipart, {
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  });
+
   const eventBus = deps.eventBus ?? new EventBus();
 
   // Routes
@@ -56,6 +71,25 @@ export async function buildApp(
     eventBus,
     auth: config.auth,
   });
+
+  // New routes (assets, memory, skills)
+  if (deps.assetStore) {
+    await registerAssetsRoutes(app, {
+      assetStore: deps.assetStore,
+      eventBus,
+    });
+  }
+  if (deps.memoryProvider) {
+    await registerMemoryRoutes(app, {
+      memoryProvider: deps.memoryProvider,
+      eventBus,
+    });
+  }
+  if (deps.skillsRegistry) {
+    await registerSkillsRoutes(app, {
+      skillsRegistry: deps.skillsRegistry,
+    });
+  }
 
   // Health check (no auth)
   app.get("/api/health", async () => ({ status: "ok" }));

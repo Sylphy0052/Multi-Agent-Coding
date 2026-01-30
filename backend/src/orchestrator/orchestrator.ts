@@ -15,8 +15,32 @@ import type { LoadedPersonaSet } from "../personas/loader.js";
 import { GitOps } from "../git/ops.js";
 import type { GitOpsConfig } from "../git/ops.js";
 import { acquireDevelopLock } from "../git/lock.js";
+import type { TaskWatcher } from "../watcher/task-watcher.js";
+import { PipelineManager } from "./pipeline.js";
+import type { ContextManager } from "../context/context-manager.js";
+import type { MemoryProvider } from "../memory/provider.js";
+import type { SkillsRegistry } from "../skills/registry.js";
+import type {
+  BusEvent,
+  JobStatusChangedEvent,
+  TaskDoneEvent,
+  TaskErrorEvent,
+  PhaseApprovedEvent,
+  PhaseRejectedEvent,
+  JobCreatedEvent,
+  MemoryUpdatedEvent,
+  SkillUpdatedEvent,
+} from "../events/types.js";
+import type { AssetStore } from "../assets/store.js";
 
 // ─── Config ─────────────────────────────────────────────
+
+export interface OrchestratorExtDeps {
+  contextManager?: ContextManager;
+  memoryProvider?: MemoryProvider;
+  skillsRegistry?: SkillsRegistry;
+  assetStore?: AssetStore;
+}
 
 export interface OrchestratorConfig {
   scheduler: SchedulerConfig;
@@ -24,7 +48,6 @@ export interface OrchestratorConfig {
   retry: Partial<RetryConfig>;
   git: GitOpsConfig;
   tmpDir: string;
-  pollIntervalMs: number;
   /** Optional: TaskRunner config. If omitted, task execution is skipped (test mode). */
   taskRunner?: TaskRunnerConfig;
 }
@@ -39,24 +62,40 @@ export class Orchestrator {
   private readonly retryManager: RetryManager;
   private readonly gitOps: GitOps;
   private readonly taskRunner: TaskRunner | null;
+  private readonly contextManager?: ContextManager;
+  private readonly memoryProvider?: MemoryProvider;
+  private readonly skillsRegistry?: SkillsRegistry;
+  private readonly assetStore?: AssetStore;
 
   private running = false;
-  private pollTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly config: OrchestratorConfig,
     private readonly store: IStateStore,
     private readonly eventBus: EventBus,
     private readonly personas: LoadedPersonaSet,
+    private readonly taskWatcher?: TaskWatcher,
+    extDeps?: OrchestratorExtDeps,
   ) {
+    this.contextManager = extDeps?.contextManager;
+    this.memoryProvider = extDeps?.memoryProvider;
+    this.skillsRegistry = extDeps?.skillsRegistry;
+    this.assetStore = extDeps?.assetStore;
+
+    const pipelineManager = new PipelineManager(personas);
     this.scheduler = new Scheduler(config.scheduler, store, eventBus);
-    this.planner = new Planner(config.planner, store);
+    this.planner = new Planner(config.planner, store, pipelineManager);
     this.aggregator = new Aggregator(store);
     this.qualityGate = new QualityGate(store);
     this.retryManager = new RetryManager(config.retry, store, eventBus);
     this.gitOps = new GitOps(config.git);
-    this.taskRunner = config.taskRunner
-      ? new TaskRunner(config.taskRunner, store, eventBus, personas)
+    this.taskRunner = config.taskRunner && taskWatcher
+      ? new TaskRunner(config.taskRunner, store, eventBus, personas, taskWatcher, {
+          contextManager: this.contextManager,
+          memoryProvider: this.memoryProvider,
+          skillsRegistry: this.skillsRegistry,
+          assetStore: this.assetStore,
+        })
       : null;
   }
 
@@ -65,10 +104,10 @@ export class Orchestrator {
   start(): void {
     if (this.running) return;
     this.running = true;
-    // Run recovery before starting the poll loop
+
     this.recover()
       .catch((e) => console.error("Recovery error:", e))
-      .finally(() => this.poll());
+      .then(() => this.registerEventHandlers());
   }
 
   /**
@@ -105,93 +144,202 @@ export class Orchestrator {
 
   stop(): void {
     this.running = false;
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
-    }
+    this.eventBus.removeAllListeners();
   }
 
   get isRunning(): boolean {
     return this.running;
   }
 
-  // ─── Main Loop ─────────────────────────────────────
+  // ─── Event Handlers Registration ──────────────────
 
-  private poll(): void {
-    if (!this.running) return;
-
-    this.tick()
-      .catch((e) => {
-        console.error("Orchestrator tick error:", e);
-      })
-      .finally(() => {
-        if (this.running) {
-          this.pollTimer = setTimeout(
-            () => this.poll(),
-            this.config.pollIntervalMs,
-          );
-        }
-      });
-  }
-
-  /**
-   * Single orchestration tick: process all pending work.
-   */
-  async tick(): Promise<void> {
-    await this.scheduler.dequeueNext();
-
-    await this.processJobsInState("RECEIVED");
-    await this.processJobsInState("PLANNING");
-    await this.processJobsInState("DISPATCHED");
-    await this.processJobsInState("RUNNING");
-    await this.processJobsInState("AGGREGATING");
-    await this.processJobsInState("APPROVED");
-    await this.processJobsInState("WAITING_RETRY");
-  }
-
-  // ─── Job Processing ────────────────────────────────
-
-  private async processJobsInState(status: Job["status"]): Promise<void> {
-    const result = await this.store.listJobs({ status });
-    if (result.isErr()) return;
-
-    for (const job of result.value) {
-      try {
-        switch (status) {
-          case "RECEIVED":
-            await this.handleReceived(job);
-            break;
-          case "PLANNING":
-            await this.handlePlanning(job);
-            break;
-          case "DISPATCHED":
-            await this.handleDispatched(job);
-            break;
-          case "RUNNING":
-            await this.handleRunning(job);
-            break;
-          case "AGGREGATING":
-            await this.handleAggregating(job);
-            break;
-          case "APPROVED":
-            await this.handleApproved(job);
-            break;
-          case "WAITING_RETRY":
-            await this.handleWaitingRetry(job);
-            break;
-        }
-      } catch (e) {
-        console.error(
-          `Error processing job ${job.job_id} in state ${status}:`,
-          e,
+  private registerEventHandlers(): void {
+    // job:created -> schedule the new job
+    this.eventBus.on("job:created", (event: BusEvent) => {
+      const e = event as JobCreatedEvent;
+      this.store.getJob(e.job_id).then((result) => {
+        if (result.isErr()) return;
+        this.handleReceived(result.value).catch((err) =>
+          console.error(`Error handling job:created for ${e.job_id}:`, err),
         );
-      }
+      });
+    });
+
+    // job:status_changed -> dispatch to appropriate handler
+    this.eventBus.on("job:status_changed", (event: BusEvent) => {
+      const e = event as JobStatusChangedEvent;
+      this.store.getJob(e.job_id).then((result) => {
+        if (result.isErr()) return;
+        const job = result.value;
+
+        this.dispatchByStatus(e.to, job).catch((err) =>
+          console.error(`Error dispatching ${e.to} for ${e.job_id}:`, err),
+        );
+      });
+    });
+
+    // task:done -> check if all tasks are done, transition to AGGREGATING
+    this.eventBus.on("task:done", (event: BusEvent) => {
+      const e = event as TaskDoneEvent;
+      this.handleTaskCompletion(e).catch((err) =>
+        console.error(`Error handling task:done for ${e.task_id}:`, err),
+      );
+    });
+
+    // task:error -> same completion check (task may have failed)
+    this.eventBus.on("task:error", (event: BusEvent) => {
+      const e = event as TaskErrorEvent;
+      this.handleTaskCompletion(e).catch((err) =>
+        console.error(`Error handling task:error for ${e.task_id}:`, err),
+      );
+    });
+
+    // phase:approved -> commit and advance
+    this.eventBus.on("phase:approved", (event: BusEvent) => {
+      const e = event as PhaseApprovedEvent;
+      this.store.getJob(e.job_id).then((result) => {
+        if (result.isErr()) return;
+        this.handleApproved(result.value).catch((err) =>
+          console.error(`Error handling phase:approved for ${e.job_id}:`, err),
+        );
+      });
+    });
+
+    // phase:rejected -> go back to PLANNING for re-plan
+    this.eventBus.on("phase:rejected", (event: BusEvent) => {
+      const e = event as PhaseRejectedEvent;
+      this.store.getJob(e.job_id).then((result) => {
+        if (result.isErr()) return;
+        const job = result.value;
+        this.transitionJobStatus(job, job.status, "PLANNING").catch((err) =>
+          console.error(`Error handling phase:rejected for ${e.job_id}:`, err),
+        );
+      });
+    });
+
+    // memory:updated -> update context memory section
+    if (this.contextManager) {
+      this.eventBus.on("memory:updated", (event: BusEvent) => {
+        const e = event as MemoryUpdatedEvent;
+        if (!e.job_id || !this.contextManager) return;
+        const summary = e.updates
+          .map((u) => `- [${u.type}] ${u.title}`)
+          .join("\n");
+        this.contextManager
+          .updateSection(
+            e.job_id,
+            "memory",
+            `### Memory Updates\n${summary}`,
+            `memory.updated#${e.timestamp}`,
+          )
+          .catch((err) =>
+            console.error(`Error updating context for memory:updated:`, err),
+          );
+      });
+
+      // skill:updated -> update context skills section
+      this.eventBus.on("skill:updated", (event: BusEvent) => {
+        const e = event as SkillUpdatedEvent;
+        if (!e.job_id || !this.contextManager) return;
+        this.contextManager
+          .updateSection(
+            e.job_id,
+            "skills",
+            `- Skill updated: ${e.skill_id} (v${e.version})`,
+            `skill.updated#${e.skill_id}`,
+          )
+          .catch((err) =>
+            console.error(`Error updating context for skill:updated:`, err),
+          );
+      });
     }
+  }
+
+  private async dispatchByStatus(
+    status: Job["status"],
+    job: Job,
+  ): Promise<void> {
+    switch (status) {
+      case "PLANNING":
+        await this.handlePlanning(job);
+        break;
+      case "DISPATCHED":
+        await this.handleDispatched(job);
+        break;
+      case "AGGREGATING":
+        await this.handleAggregating(job);
+        break;
+      case "APPROVED":
+        await this.handleApproved(job);
+        break;
+      case "WAITING_RETRY":
+        this.scheduleRetry(job);
+        break;
+    }
+  }
+
+  // ─── Task Completion (Event-Driven) ───────────────
+
+  private async handleTaskCompletion(
+    event: TaskDoneEvent | TaskErrorEvent,
+  ): Promise<void> {
+    const jobResult = await this.store.getJob(event.job_id);
+    if (jobResult.isErr()) return;
+    const job = jobResult.value;
+
+    if (job.status !== "RUNNING") return;
+    if (!job.current_phase) return;
+
+    // Check if all tasks for the current phase are done
+    const tasksResult = await this.store.listTasksByJob(job.job_id);
+    if (tasksResult.isErr()) return;
+
+    const phaseTasks = tasksResult.value.filter(
+      (t) => t.phase === job.current_phase,
+    );
+    const allDone = phaseTasks.every(
+      (t) =>
+        t.status === "COMPLETED" ||
+        t.status === "FAILED" ||
+        t.status === "CANCELED",
+    );
+
+    if (allDone) {
+      if (this.taskRunner) await this.taskRunner.cleanup(job.job_id);
+      await this.transitionJobStatus(job, "RUNNING", "AGGREGATING");
+    }
+  }
+
+  // ─── Retry Scheduling (Timer-Based) ───────────────
+
+  private scheduleRetry(job: Job): void {
+    const delay = this.retryManager.getBackoffDelay(
+      Math.max(0, job.retry_count - 1),
+    );
+    const retryAfter = new Date(
+      new Date(job.updated_at).getTime() + delay * 1000,
+    );
+    const waitMs = Math.max(0, retryAfter.getTime() - Date.now());
+
+    setTimeout(() => {
+      this.handleWaitingRetry(job).catch((e) =>
+        console.error(`Retry error for ${job.job_id}:`, e),
+      );
+    }, waitMs);
   }
 
   // ─── RECEIVED ──────────────────────────────────────
 
   private async handleReceived(job: Job): Promise<void> {
+    // Generate initial context.md for the job
+    if (this.contextManager) {
+      try {
+        await this.contextManager.generateInitialContext(job);
+      } catch (e) {
+        console.error(`[orchestrator] Failed to generate initial context for ${job.job_id}:`, e);
+      }
+    }
+
     await this.scheduler.scheduleJob(job);
   }
 
@@ -209,7 +357,7 @@ export class Orchestrator {
       updated_at: phaseJob.updated_at,
     });
 
-    const templates = this.planner.generateDefaultTemplates(
+    const templates = this.planner.generatePipelineTasks(
       job.user_prompt,
       phase,
       job.parallelism,
@@ -271,7 +419,9 @@ export class Orchestrator {
   // ─── RUNNING ───────────────────────────────────────
 
   /**
-   * Poll for task completion. When all done, transition to AGGREGATING.
+   * Transition RUNNING -> AGGREGATING.
+   * In event-driven mode, this is called when handleTaskCompletion detects
+   * all tasks are done. Without a TaskRunner (test mode), it transitions immediately.
    */
   async handleRunning(job: Job): Promise<Result<void, Error>> {
     if (!this.taskRunner) {
@@ -280,14 +430,8 @@ export class Orchestrator {
       return ok(undefined);
     }
 
-    const allDoneResult = await this.taskRunner.pollTasks(job);
-    if (allDoneResult.isErr()) return err(allDoneResult.error);
-
-    if (allDoneResult.value) {
-      await this.taskRunner.cleanup(job.job_id);
-      await this.transitionJobStatus(job, "RUNNING", "AGGREGATING");
-    }
-
+    // In event-driven mode, the transition is handled by handleTaskCompletion.
+    // This method is kept for direct invocation in test mode.
     return ok(undefined);
   }
 
@@ -307,6 +451,34 @@ export class Orchestrator {
     const gate = gateResult.value;
     if (!gate.passed) {
       const issuesSummary = gate.issues.join("; ");
+
+      // Record gate failure in trace
+      await this.store.appendTrace(
+        createTraceEntry(
+          job.job_id,
+          gate.auditorVerdict ? "auditor" : "system",
+          "GATE_FAIL",
+          `${phase} gate: ${gate.auditorVerdict ?? "FAIL"} - ${issuesSummary.slice(0, 300)}`,
+        ),
+      );
+
+      // Max rework limit: 2 gate failures per phase -> FAILED
+      const MAX_GATE_RETRIES = 2;
+      if (job.retry_count >= MAX_GATE_RETRIES && gate.auditorVerdict === "FAIL") {
+        await this.store.updateJob(job.job_id, {
+          status: "FAILED",
+          last_error: `Gate rework limit (${MAX_GATE_RETRIES}) exceeded for ${phase}: ${issuesSummary}`,
+          updated_at: new Date().toISOString(),
+        });
+        this.eventBus.emit({
+          type: "job:failed",
+          job_id: job.job_id,
+          error: `Gate rework limit exceeded for ${phase}`,
+          timestamp: new Date().toISOString(),
+        });
+        return ok(undefined);
+      }
+
       await this.retryManager.applyRetry(
         { ...job, status: "AGGREGATING" as const },
         `Quality gate failed: ${issuesSummary}`,
@@ -476,15 +648,6 @@ export class Orchestrator {
   // ─── WAITING_RETRY ─────────────────────────────────
 
   private async handleWaitingRetry(job: Job): Promise<void> {
-    const delay = this.retryManager.getBackoffDelay(
-      Math.max(0, job.retry_count - 1),
-    );
-    const retryAfter = new Date(
-      new Date(job.updated_at).getTime() + delay * 1000,
-    );
-
-    if (new Date() < retryAfter) return;
-
     const transResult = transitionJob(job, "PLANNING");
     if (transResult.isErr()) return;
 

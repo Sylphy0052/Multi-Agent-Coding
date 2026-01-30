@@ -5,6 +5,7 @@ import type { IStateStore } from "../store/interface.js";
 import type { LoadedPersonaSet } from "../personas/loader.js";
 import { buildAiChanPlanningPrompt } from "../personas/prompt-builder.js";
 import { createTask } from "../domain/task.js";
+import { PipelineManager, type TaskTemplate as PipelineTaskTemplate } from "./pipeline.js";
 
 // ─── Types ──────────────────────────────────────────────
 
@@ -18,6 +19,8 @@ export interface TaskTemplate {
   inputs: string[];
   constraints: string[];
   acceptance_criteria: string[];
+  /** Role-based assignee (e.g. "researcher", "kobito-1", "auditor"). */
+  assignee?: string;
 }
 
 export interface PlanResult {
@@ -28,10 +31,15 @@ export interface PlanResult {
 // ─── Planner ────────────────────────────────────────────
 
 export class Planner {
+  private readonly pipelineManager?: PipelineManager;
+
   constructor(
     private readonly config: PlannerConfig,
     private readonly store: IStateStore,
-  ) {}
+    pipelineManager?: PipelineManager,
+  ) {
+    this.pipelineManager = pipelineManager;
+  }
 
   /**
    * Build the planning prompt for AI-chan to decompose the user request.
@@ -98,7 +106,7 @@ export class Planner {
       const template = templates[i];
       const task = createTask({
         job_id: jobId,
-        assignee: `kobito-${i + 1}`,
+        assignee: template.assignee ?? `kobito-${i + 1}`,
         phase,
         objective: template.objective,
         inputs: template.inputs,
@@ -138,5 +146,38 @@ export class Planner {
     }
 
     return templates;
+  }
+
+  /**
+   * Generate pipeline task templates using PipelineManager if available,
+   * otherwise fall back to generateDefaultTemplates().
+   *
+   * Pipeline templates include sub-role tasks (researcher, auditor)
+   * in addition to kobito worker tasks.
+   */
+  generatePipelineTasks(
+    userPrompt: string,
+    phase: Phase,
+    parallelism: number,
+  ): TaskTemplate[] {
+    if (!this.pipelineManager) {
+      return this.generateDefaultTemplates(userPrompt, phase, parallelism);
+    }
+
+    // Use PipelineManager to generate templates with sub-roles
+    const pipelineTemplates = this.pipelineManager.generatePhaseTasks(
+      userPrompt,
+      phase,
+      parallelism,
+    );
+
+    // Convert PipelineTaskTemplate to local TaskTemplate (preserve assignee)
+    return pipelineTemplates.map((pt) => ({
+      objective: pt.objective,
+      inputs: pt.inputs,
+      constraints: pt.constraints,
+      acceptance_criteria: pt.acceptance_criteria,
+      assignee: pt.assignee,
+    }));
   }
 }

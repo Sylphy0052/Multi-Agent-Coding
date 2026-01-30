@@ -11,6 +11,7 @@ export interface QualityCheckResult {
   completedTasks: number;
   reportsReceived: number;
   issues: string[];
+  auditorVerdict?: "PASS" | "FAIL";
 }
 
 // ─── Quality Gate ───────────────────────────────────────
@@ -69,10 +70,46 @@ export class QualityGate {
       );
     }
 
+    // Check auditor reports for PASS/FAIL verdict
+    const auditorTasks = phaseTasks.filter((t) => t.assignee === "auditor");
+    const auditorReports = phaseReports.filter((r) =>
+      auditorTasks.some((t) => t.task_id === r.task_id),
+    );
+
+    let auditorVerdict: "PASS" | "FAIL" | undefined;
+    if (auditorReports.length > 0) {
+      const latestAuditorReport = auditorReports[auditorReports.length - 1];
+
+      // Prefer structured gate_verdict field from Report
+      if (latestAuditorReport.gate_verdict) {
+        auditorVerdict = latestAuditorReport.gate_verdict;
+      } else {
+        // Fallback: parse summary text for PASS/FAIL
+        const summaryText = latestAuditorReport.summary.toUpperCase();
+        if (summaryText.includes("FAIL")) {
+          auditorVerdict = "FAIL";
+        } else if (summaryText.includes("PASS")) {
+          auditorVerdict = "PASS";
+        }
+      }
+
+      if (auditorVerdict === "FAIL") {
+        // Extract issues from auditor findings
+        for (const finding of latestAuditorReport.findings) {
+          issues.push(`Auditor: ${finding.claim} (evidence: ${finding.evidence})`);
+        }
+        // Include next_actions as fix instructions
+        for (const action of latestAuditorReport.next_actions) {
+          issues.push(`Fix required: ${action}`);
+        }
+      }
+    }
+
     const passed =
       issues.length === 0 &&
       completedTasks.length > 0 &&
-      completedTasks.length === phaseTasks.length;
+      completedTasks.length === phaseTasks.length &&
+      auditorVerdict !== "FAIL";
 
     return ok({
       passed,
@@ -81,6 +118,7 @@ export class QualityGate {
       completedTasks: completedTasks.length,
       reportsReceived: phaseReports.length,
       issues,
+      auditorVerdict,
     });
   }
 }
