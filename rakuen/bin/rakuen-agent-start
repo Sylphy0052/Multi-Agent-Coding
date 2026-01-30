@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# rakuen-agent-start: Launch Claude Code with role instructions injected
+# as a system prompt.
+#
+# Usage:
+#   rakuen-agent-start <instructions_file> [-- <extra claude args...>]
+#
+# This script reads the instructions markdown file and passes its content
+# via --append-system-prompt so that Claude Code treats the role definition
+# as a system-level instruction, not a user message.
+#
+# Arguments:
+#   instructions_file  Path to the .md prompt file (e.g. instructions/rakuen.md)
+#   --                 Separator between instructions file and claude args
+#   extra args         Additional arguments forwarded to the claude CLI
+
+INSTRUCTIONS_FILE="${1:-}"
+shift || true
+
+# Skip -- separator if present
+if [[ "${1:-}" == "--" ]]; then
+    shift
+fi
+
+EXTRA_ARGS=("$@")
+
+if [[ -n "$INSTRUCTIONS_FILE" && -f "$INSTRUCTIONS_FILE" ]]; then
+    CONTENT=$(cat "$INSTRUCTIONS_FILE")
+    exec claude "${EXTRA_ARGS[@]}" --append-system-prompt "$CONTENT"
+else
+    if [[ -n "$INSTRUCTIONS_FILE" ]]; then
+        echo "WARN: Instructions file not found: $INSTRUCTIONS_FILE" >&2
+        echo "      Launching claude without role instructions." >&2
+    fi
+    exec claude "${EXTRA_ARGS[@]}"
+fi

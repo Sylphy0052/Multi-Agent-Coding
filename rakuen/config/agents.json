@@ -1,0 +1,134 @@
+{
+  "sessions": {
+    "rakuen": {
+      "window": 0,
+      "panes": {
+        "0": {
+          "name": "uichan",
+          "title": "UI-CHAN",
+          "env": {
+            "RAKUEN_ROLE": "uichan",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/uichan.md",
+          "command": "MAX_THINKING_TOKENS=0 claude --model opus --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでね。完了したら、ご主人様に準備完了を報告してね。"
+        }
+      }
+    },
+    "multiagent": {
+      "window": 0,
+      "panes": {
+        "0": {
+          "name": "aichan",
+          "title": "AI-CHAN",
+          "env": {
+            "RAKUEN_ROLE": "aichan",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/aichan.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでくれ。完了後、指示待ち状態で停止だ。"
+        },
+        "1": {
+          "name": "kobito1",
+          "title": "KOBI-1",
+          "env": {
+            "RAKUEN_ROLE": "kobito1",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人1ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "2": {
+          "name": "kobito2",
+          "title": "KOBI-2",
+          "env": {
+            "RAKUEN_ROLE": "kobito2",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人2ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "3": {
+          "name": "kobito3",
+          "title": "KOBI-3",
+          "env": {
+            "RAKUEN_ROLE": "kobito3",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人3ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "4": {
+          "name": "kobito4",
+          "title": "KOBI-4",
+          "env": {
+            "RAKUEN_ROLE": "kobito4",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人4ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "5": {
+          "name": "kobito5",
+          "title": "KOBI-5",
+          "env": {
+            "RAKUEN_ROLE": "kobito5",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人5ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "6": {
+          "name": "kobito6",
+          "title": "KOBI-6",
+          "env": {
+            "RAKUEN_ROLE": "kobito6",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人6ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "7": {
+          "name": "kobito7",
+          "title": "KOBI-7",
+          "env": {
+            "RAKUEN_ROLE": "kobito7",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人7ちゃんだよ! 指示があるまで待機するね!"
+        },
+        "8": {
+          "name": "kobito8",
+          "title": "KOBI-8",
+          "env": {
+            "RAKUEN_ROLE": "kobito8",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
+          "command": "claude --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。ボクは小人8ちゃんだよ! 指示があるまで待機するね!"
+        }
+      }
+    }
+  }
+}

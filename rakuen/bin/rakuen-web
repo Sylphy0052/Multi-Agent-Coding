@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# rakuen-web: Main entry point for the Rakuen Web UI system.
+#
+# Usage:
+#   rakuen-web [--strict] [--port <N>]
+#
+# This script:
+#   1. Verifies WSL environment
+#   2. Determines the repository root
+#   3. Launches tmux sessions via rakuen-launch
+#   4. Starts the Web UI HTTP server
+#
+# All runtime artifacts are stored in /home/$USER/rakuen/ (repo non-contamination).
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+RAKUEN_HOME="/home/$USER/rakuen"
+STRICT=false
+PORT_START=8080
+
+# ---------------------------------------------------------------------------
+# WSL Check
+# ---------------------------------------------------------------------------
+check_wsl() {
+    if grep -qi "microsoft" /proc/version 2>/dev/null; then
+        return 0
+    fi
+    if [ -n "${WSL_INTEROP:-}" ]; then
+        return 0
+    fi
+    echo "ERROR: rakuen-web requires a WSL (Windows Subsystem for Linux) environment." >&2
+    echo "       /proc/version does not contain 'microsoft' and WSL_INTEROP is not set." >&2
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Dependency checks
+# ---------------------------------------------------------------------------
+check_dependencies() {
+    if ! command -v tmux &>/dev/null; then
+        echo "ERROR: tmux is not installed." >&2
+        echo "       Install with: sudo apt install tmux" >&2
+        exit 1
+    fi
+
+    if ! command -v python3 &>/dev/null; then
+        echo "ERROR: python3 is not installed." >&2
+        echo "       Install with: sudo apt install python3" >&2
+        exit 1
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Repository root detection
+# ---------------------------------------------------------------------------
+detect_repo_root() {
+    if git rev-parse --show-toplevel 2>/dev/null; then
+        return
+    fi
+    # Fallback to current directory
+    pwd
+}
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --strict)
+                STRICT=true
+                ;;
+            --port)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo "ERROR: --port requires a value" >&2
+                    exit 1
+                fi
+                PORT_START="$1"
+                ;;
+            --help|-h)
+                echo "Usage: rakuen-web [--strict] [--port <N>]"
+                echo ""
+                echo "Options:"
+                echo "  --strict   Exit if tmux validation fails"
+                echo "  --port N   Starting port number (default: 8080)"
+                echo "  --help     Show this help message"
+                exit 0
+                ;;
+            *)
+                echo "Unknown option: $1" >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Virtual environment setup
+# ---------------------------------------------------------------------------
+setup_venv() {
+    local venv_dir="$RAKUEN_HOME/.venv"
+    if [ ! -d "$venv_dir" ]; then
+        echo "INFO: Creating Python virtual environment at $venv_dir ..." >&2
+        python3 -m venv "$venv_dir"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup (kill tmux sessions on exit)
+# ---------------------------------------------------------------------------
+cleanup() {
+    echo "" >&2
+    echo "INFO: Shutting down Rakuen..." >&2
+    for session in rakuen multiagent; do
+        if tmux has-session -t "$session" 2>/dev/null; then
+            echo "INFO: Killing tmux session '$session'..." >&2
+            tmux kill-session -t "$session"
+        fi
+    done
+    echo "INFO: Shutdown complete." >&2
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+    parse_args "$@"
+
+    echo "=== Rakuen Web UI ===" >&2
+
+    # Step 1: WSL check
+    check_wsl
+    echo "OK: WSL environment detected." >&2
+
+    # Step 2: Dependency checks
+    check_dependencies
+    echo "OK: Dependencies satisfied (tmux, python3)." >&2
+
+    # Step 3: Check RAKUEN_HOME exists
+    if [ ! -d "$RAKUEN_HOME" ]; then
+        echo "ERROR: RAKUEN_HOME directory not found: $RAKUEN_HOME" >&2
+        echo "       Run setup.sh first to deploy rakuen files." >&2
+        exit 1
+    fi
+
+    # Step 4: Detect repo root
+    REPO_ROOT=$(detect_repo_root)
+    echo "INFO: Repository root: $REPO_ROOT" >&2
+
+    # Step 5: Run rakuen-launch (tmux construction)
+    echo "INFO: Building tmux sessions..." >&2
+    local launch_args=("$REPO_ROOT")
+    if [ "$STRICT" = true ]; then
+        launch_args+=("--strict")
+    fi
+
+    local launch_result
+    if launch_result=$("$RAKUEN_HOME/bin/rakuen-launch" "${launch_args[@]}"); then
+        echo "INFO: tmux sessions ready." >&2
+        echo "$launch_result" >&2
+    else
+        local exit_code=$?
+        if [ "$STRICT" = true ]; then
+            echo "ERROR: tmux validation failed (strict mode). Aborting." >&2
+            exit "$exit_code"
+        else
+            echo "WARN: tmux launch returned non-zero, but continuing (non-strict mode)." >&2
+        fi
+    fi
+
+    # Step 6: Setup venv
+    setup_venv
+
+    # Step 7: Create logs directory if needed
+    mkdir -p "$RAKUEN_HOME/logs"
+
+    # Step 8: Register cleanup trap (kill tmux sessions on exit)
+    trap cleanup EXIT
+
+    # Step 9: Start Web UI (no exec, so cleanup trap fires on exit)
+    echo "INFO: Starting Web UI server..." >&2
+    local WORKSPACE_DIR="$RAKUEN_HOME/workspaces/$(basename "$REPO_ROOT")"
+    export RAKUEN_HOME
+    export REPO_ROOT
+    export WORKSPACE_DIR
+    export PORT_START
+
+    "$RAKUEN_HOME/.venv/bin/python3" "$RAKUEN_HOME/webui/app.py" || true
+}
+
+main "$@"

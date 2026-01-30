@@ -1,0 +1,20 @@
+# multi-agent-rakuen 設定ファイル
+
+# 言語設定
+# ja: 日本語(キャラクター口調日本語のみ, 併記なし)
+# en: 英語(キャラクター口調日本語 + 英訳併記)
+# その他の言語コード(es, zh, ko, fr, de 等)も対応
+language: ja
+
+# スキル設定
+skill:
+  # スキル保存先(生成されたスキルはここに保存)
+  save_path: "~/.claude/skills/rakuen-generated/"
+
+  # ローカルスキル保存先(このプロジェクト専用)
+  local_path: "~/rakuen/skills/"
+
+# ログ設定
+logging:
+  level: info  # debug | info | warn | error
+  path: "~/rakuen/logs/"

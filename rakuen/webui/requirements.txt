@@ -1,0 +1,11 @@
+# rakuen-web: Python dependencies
+#
+# This project uses only Python standard library modules.
+# No external packages are required.
+#
+# Modules used:
+#   - http.server (HTTP server)
+#   - json (JSON parsing)
+#   - subprocess (tmux command execution)
+#   - urllib.parse (query string parsing)
+#   - os, sys, pathlib (filesystem operations)

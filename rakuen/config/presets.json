@@ -1,0 +1,24 @@
+{
+  "presets": [
+    {
+      "id": "status",
+      "label": "Status Report",
+      "text": "Report current status of all agents and tasks."
+    },
+    {
+      "id": "dashboard",
+      "label": "Update Dashboard",
+      "text": "Update dashboard.md with the latest state of all tasks."
+    },
+    {
+      "id": "continue",
+      "label": "Continue",
+      "text": "Continue working on the current task."
+    },
+    {
+      "id": "stop",
+      "label": "Stop",
+      "text": "Stop current work and report the current state."
+    }
+  ]
+}

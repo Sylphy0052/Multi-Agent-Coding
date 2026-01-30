@@ -1,0 +1,760 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# rakuen-launch: Build tmux sessions idempotently and validate integrity.
+#
+# Usage:
+#   rakuen-launch <REPO_ROOT> [--verify-only] [--strict]
+#
+# Arguments:
+#   REPO_ROOT      Path to the working repository root
+#   --verify-only  Skip session creation, only run validation
+#   --strict       Exit 1 if validation fails
+
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+RAKUEN_HOME="${RAKUEN_HOME:-/home/$USER/rakuen}"
+AGENTS_JSON="$RAKUEN_HOME/config/agents.json"
+REPO_ROOT=""
+WORKSPACE_DIR=""
+VERIFY_ONLY=false
+STRICT=false
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+parse_args() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: rakuen-launch <REPO_ROOT> [--verify-only] [--strict]" >&2
+        exit 1
+    fi
+
+    REPO_ROOT="$1"
+    shift
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --verify-only) VERIFY_ONLY=true ;;
+            --strict)      STRICT=true ;;
+            *)             echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+        shift
+    done
+}
+
+# ---------------------------------------------------------------------------
+# JSON helpers (using python3 instead of jq)
+# ---------------------------------------------------------------------------
+
+# Get pane keys for a session from agents.json
+# Usage: get_pane_keys <session_name>
+get_pane_keys() {
+    local session="$1"
+    python3 -c "
+import json, sys
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+panes = data['sessions']['$session']['panes']
+for k in sorted(panes.keys(), key=int):
+    print(k)
+"
+}
+
+# Get pane field value
+# Usage: get_pane_field <session_name> <pane_index> <field>
+get_pane_field() {
+    local session="$1" pane="$2" field="$3"
+    python3 -c "
+import json
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+val = data['sessions']['$session']['panes']['$pane']['$field']
+print(val)
+"
+}
+
+# Get all env vars for a pane as KEY=VALUE lines
+# Usage: get_pane_env <session_name> <pane_index>
+get_pane_env() {
+    local session="$1" pane="$2"
+    python3 -c "
+import json
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+env = data['sessions']['$session']['panes']['$pane']['env']
+for k, v in env.items():
+    print(f'{k}={v}')
+"
+}
+
+# Get optional pane field (returns empty string if not found)
+# Usage: get_pane_field_optional <session_name> <pane_index> <field>
+get_pane_field_optional() {
+    local session="$1" pane="$2" field="$3"
+    python3 -c "
+import json
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+val = data['sessions']['$session']['panes']['$pane'].get('$field', '')
+print(val)
+"
+}
+
+# Expand placeholders in a string: ${REPO_ROOT}, ${RAKUEN_HOME}
+# Usage: expand_placeholders <string>
+expand_placeholders() {
+    local s="$1"
+    s="${s//\$\{REPO_ROOT\}/$REPO_ROOT}"
+    s="${s//\$\{RAKUEN_HOME\}/$RAKUEN_HOME}"
+    s="${s//\$\{WORKSPACE_DIR\}/$WORKSPACE_DIR}"
+    echo "$s"
+}
+
+# Build the full launch command for a pane.
+# If instructions file is defined, uses rakuen-agent-start wrapper
+# to inject instructions via --append-system-prompt.
+# Usage: build_launch_command <session_name> <pane_index>
+build_launch_command() {
+    local session="$1" pane="$2"
+
+    local raw_cmd instructions_path
+    raw_cmd=$(get_pane_field "$session" "$pane" command)
+    instructions_path=$(get_pane_field_optional "$session" "$pane" instructions)
+
+    # Expand placeholders
+    raw_cmd=$(expand_placeholders "$raw_cmd")
+    instructions_path=$(expand_placeholders "$instructions_path")
+
+    if [ -n "$instructions_path" ] && [ -f "$instructions_path" ]; then
+        # Extract env prefix (e.g. MAX_THINKING_TOKENS=0) and claude args separately
+        local env_prefix="" claude_args=""
+        if [[ "$raw_cmd" =~ ^([A-Z_]+=[^ ]+[[:space:]]+)*claude ]]; then
+            # Split: everything before 'claude' is env prefix, everything after is args
+            env_prefix="${raw_cmd%%claude*}"
+            claude_args="${raw_cmd#*claude}"
+        else
+            claude_args="${raw_cmd#*claude}"
+        fi
+        # Construct: [env_prefix] rakuen-agent-start <file> -- [claude_args]
+        echo "${env_prefix}${RAKUEN_HOME}/bin/rakuen-agent-start '${instructions_path}' --${claude_args}"
+    else
+        echo "$raw_cmd"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Runtime initialization (matches sanko's shutsujin_departure.sh behavior)
+# ---------------------------------------------------------------------------
+
+initialize_runtime() {
+    echo "INFO: Initializing workspace at $WORKSPACE_DIR ..." >&2
+
+    # Create per-repo workspace directories
+    mkdir -p "$WORKSPACE_DIR/queue/tasks"
+    mkdir -p "$WORKSPACE_DIR/queue/reports"
+    mkdir -p "$WORKSPACE_DIR/status"
+    mkdir -p "$WORKSPACE_DIR/memory"
+    mkdir -p "$WORKSPACE_DIR/context"
+    mkdir -p "$WORKSPACE_DIR/logs"
+    mkdir -p "$WORKSPACE_DIR/config"
+
+    # Create shared directories (remain at RAKUEN_HOME)
+    mkdir -p "$RAKUEN_HOME/skills"
+
+    # Reset queue: rakuen_to_aichan.yaml
+    cat > "$WORKSPACE_DIR/queue/rakuen_to_aichan.yaml" << 'QEOF'
+queue: []
+QEOF
+
+    # Reset queue: aichan_to_kobito.yaml
+    cat > "$WORKSPACE_DIR/queue/aichan_to_kobito.yaml" << 'QEOF'
+assignments:
+  kobito1:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito2:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito3:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito4:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito5:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito6:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito7:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+  kobito8:
+    task_id: null
+    description: null
+    target_path: null
+    status: idle
+QEOF
+
+    # Reset kobito task files (1-8)
+    for i in $(seq 1 8); do
+        cat > "$WORKSPACE_DIR/queue/tasks/kobito${i}.yaml" << TEOF
+# 小人${i}専用タスクファイル
+task:
+  task_id: null
+  parent_cmd: null
+  description: null
+  target_path: null
+  status: idle
+  timestamp: ""
+TEOF
+    done
+
+    # Reset kobito report files (1-8)
+    for i in $(seq 1 8); do
+        cat > "$WORKSPACE_DIR/queue/reports/kobito${i}_report.yaml" << REOF
+worker_id: kobito${i}
+task_id: null
+timestamp: ""
+status: idle
+result: null
+REOF
+    done
+
+    # Read language setting (check workspace first, then shared config)
+    local lang_setting="ja"
+    if [ -f "$WORKSPACE_DIR/config/settings.yaml" ]; then
+        lang_setting=$(grep "^language:" "$WORKSPACE_DIR/config/settings.yaml" 2>/dev/null | awk '{print $2}' || echo "ja")
+    elif [ -f "$RAKUEN_HOME/config/settings.yaml" ]; then
+        lang_setting=$(grep "^language:" "$RAKUEN_HOME/config/settings.yaml" 2>/dev/null | awk '{print $2}' || echo "ja")
+    fi
+
+    # Initialize dashboard.md
+    local timestamp
+    timestamp=$(date "+%Y-%m-%d %H:%M")
+
+    if [ "$lang_setting" = "ja" ]; then
+        cat > "$WORKSPACE_DIR/dashboard.md" << DEOF
+# おしごとレポート
+最終更新: ${timestamp}
+
+## 要対応 - ご主人様のご判断をお待ちしています
+なし
+
+## 進行中 - 只今、おしごと中
+なし
+
+## 本日のできたこと
+| 時刻 | 作業場所 | タスク | 結果 |
+|------|------|------|------|
+
+## スキル化候補 - 承認待ち
+なし
+
+## 生成されたスキル
+なし
+
+## 待機中
+なし
+
+## 伺い事項
+なし
+DEOF
+    else
+        cat > "$WORKSPACE_DIR/dashboard.md" << DEOF
+# おしごとレポート (Work Report)
+最終更新 (Last Updated): ${timestamp}
+
+## 要対応 - ご主人様のご判断をお待ちしています (Action Required - Awaiting Master's Decision)
+なし (None)
+
+## 進行中 - 只今、おしごと中 (In Progress - Currently Working)
+なし (None)
+
+## 本日のできたこと (Today's Achievements)
+| 時刻 (Time) | 作業場所 (Workspace) | タスク (Task) | 結果 (Result) |
+|------|------|------|------|
+
+## スキル化候補 - 承認待ち (Skill Candidates - Pending Approval)
+なし (None)
+
+## 生成されたスキル (Generated Skills)
+なし (None)
+
+## 待機中 (On Standby)
+なし (None)
+
+## 伺い事項 (Questions for Master)
+なし (None)
+DEOF
+    fi
+
+    # Create workspace config/settings.yaml if not exists (copy from shared)
+    if [ ! -f "$WORKSPACE_DIR/config/settings.yaml" ]; then
+        if [ -f "$RAKUEN_HOME/config/settings.yaml" ]; then
+            cp "$RAKUEN_HOME/config/settings.yaml" "$WORKSPACE_DIR/config/settings.yaml"
+        else
+            cat > "$WORKSPACE_DIR/config/settings.yaml" << 'SEOF'
+# multi-agent-rakuen 設定ファイル
+language: ja
+
+skill:
+  save_path: "~/.claude/skills/rakuen-generated/"
+  local_path: "~/rakuen/skills/"
+
+logging:
+  level: info
+  path: "~/rakuen/logs/"
+SEOF
+        fi
+    fi
+
+    # Create workspace config/projects.yaml if not exists (copy from shared)
+    if [ ! -f "$WORKSPACE_DIR/config/projects.yaml" ]; then
+        if [ -f "$RAKUEN_HOME/config/projects.yaml" ]; then
+            cp "$RAKUEN_HOME/config/projects.yaml" "$WORKSPACE_DIR/config/projects.yaml"
+        else
+            cat > "$WORKSPACE_DIR/config/projects.yaml" << 'PEOF'
+projects:
+  - id: sample_project
+    name: "Sample Project"
+    path: "/path/to/your/project"
+    priority: high
+    status: active
+
+current_project: sample_project
+PEOF
+        fi
+    fi
+
+    echo "INFO: Workspace initialization complete." >&2
+}
+
+# ---------------------------------------------------------------------------
+# Session builders
+# ---------------------------------------------------------------------------
+
+build_rakuen_session() {
+    if tmux has-session -t rakuen 2>/dev/null; then
+        echo "INFO: Session 'rakuen' already exists, killing and recreating." >&2
+        tmux kill-session -t rakuen
+    fi
+
+    echo "INFO: Creating session 'rakuen'..." >&2
+    tmux new-session -d -s rakuen
+
+    # Set title
+    local title
+    title=$(get_pane_field rakuen 0 title)
+    tmux select-pane -t rakuen:0.0 -T "$title"
+
+    # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
+    tmux send-keys -t rakuen:0.0 "cd $WORKSPACE_DIR" Enter
+
+    # Set environment variables
+    while IFS='=' read -r key value; do
+        value=$(expand_placeholders "$value")
+        tmux send-keys -t rakuen:0.0 "export ${key}=${value}" Enter
+    done < <(get_pane_env rakuen 0)
+
+    # Run command (with instructions injected via wrapper if defined)
+    local cmd
+    cmd=$(build_launch_command rakuen 0)
+    if [ -n "$cmd" ]; then
+        tmux send-keys -t rakuen:0.0 "$cmd" Enter
+    fi
+}
+
+build_multiagent_session() {
+    if tmux has-session -t multiagent 2>/dev/null; then
+        echo "INFO: Session 'multiagent' already exists, killing and recreating." >&2
+        tmux kill-session -t multiagent
+    fi
+
+    echo "INFO: Creating session 'multiagent'..." >&2
+    tmux new-session -d -s multiagent -n "agents"
+
+    # Build 3x3 grid (9 panes total)
+    # Step 1: Split into 3 columns
+    tmux split-window -h -t "multiagent:0"
+    tmux split-window -h -t "multiagent:0"
+
+    # Step 2: Split each column into 3 rows
+    tmux select-pane -t "multiagent:0.0"
+    tmux split-window -v
+    tmux split-window -v
+
+    tmux select-pane -t "multiagent:0.3"
+    tmux split-window -v
+    tmux split-window -v
+
+    tmux select-pane -t "multiagent:0.6"
+    tmux split-window -v
+    tmux split-window -v
+
+    # Configure each pane
+    local pane_keys
+    pane_keys=$(get_pane_keys multiagent)
+
+    for idx in $pane_keys; do
+        local target="multiagent:0.${idx}"
+
+        # Set title
+        local title
+        title=$(get_pane_field multiagent "$idx" title)
+        tmux select-pane -t "$target" -T "$title"
+
+        # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
+        tmux send-keys -t "$target" "cd $WORKSPACE_DIR" Enter
+
+        # Set environment variables
+        while IFS='=' read -r key value; do
+            value=$(expand_placeholders "$value")
+            tmux send-keys -t "$target" "export ${key}=${value}" Enter
+        done < <(get_pane_env multiagent "$idx")
+
+        # Run command (with instructions injected via wrapper if defined)
+        local cmd
+        cmd=$(build_launch_command multiagent "$idx")
+        if [ -n "$cmd" ]; then
+            tmux send-keys -t "$target" "$cmd" Enter
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Initial prompt delivery
+# ---------------------------------------------------------------------------
+
+# Check if a tmux pane shows the Claude Code idle prompt.
+# Captures scrollback buffer (small panes may push > off-screen)
+# and checks multiple idle indicators.
+# Usage: is_claude_ready <target>
+# Returns: 0 if ready, 1 if not
+is_claude_ready() {
+    local target="$1"
+    local output
+    # -S -30: capture 30 lines of scrollback beyond the visible area
+    output=$(tmux capture-pane -t "$target" -p -S -30 2>/dev/null | tail -20)
+    # Check multiple idle indicators (prompt symbol or permission banner)
+    if echo "$output" | grep -qE "❯|bypass permissions on"; then
+        return 0
+    fi
+    return 1
+}
+
+# Send initial prompt to a pane with response-indicator detection.
+# Strategy:
+#   1. Send the prompt text (without Enter)
+#   2. Send Enter (once)
+#   3. Wait for Claude's response indicator (●) in scrollback
+#   4. If ● detected -> prompt was accepted
+#   5. If not detected after generous timeout -> retry Enter (once more)
+# Uses scrollback capture (-S -50) to reliably detect responses
+# even in small tmux panes (e.g. 19x5 in a 3x3 grid).
+#
+# Previous approach used visible-area hash comparison and retried
+# Enter on every loop iteration. This caused duplicate Enters when
+# the hash failed to change (common in tiny panes), leading to
+# "empty input" being sent to Claude Code after the real prompt was
+# already accepted -- which Claude interpreted as a continuation
+# signal, causing agents to act autonomously.
+#
+# Usage: send_prompt_with_retry <target> <prompt_text>
+# Returns: 0 if accepted, 1 if failed after retries
+send_prompt_with_retry() {
+    local target="$1"
+    local prompt_text="$2"
+    local max_enter_retries=3
+    local wait_per_attempt=30  # seconds to wait for response per attempt
+
+    # Step 1: Send the prompt text (without Enter)
+    tmux send-keys -t "$target" "$prompt_text"
+    sleep 2
+
+    # Step 2: Send Enter and wait for response indicator
+    local attempt=0
+    while [ "$attempt" -lt "$max_enter_retries" ]; do
+        attempt=$((attempt + 1))
+
+        # Send Enter (exactly once per attempt)
+        tmux send-keys -t "$target" Enter
+
+        # Step 3: Wait for Claude's response indicator (●) in scrollback
+        local elapsed=0
+        while [ "$elapsed" -lt "$wait_per_attempt" ]; do
+            sleep 3
+            elapsed=$((elapsed + 3))
+
+            local output
+            output=$(tmux capture-pane -t "$target" -p -S -50 2>/dev/null)
+
+            # ● is Claude Code's response prefix -- appears as soon as
+            # Claude starts generating output.  Checking scrollback
+            # (-S -50) ensures we detect it even in very small panes.
+            if echo "$output" | grep -qF "●"; then
+                echo "INFO:   $target: prompt accepted (response detected, attempt $attempt, ${elapsed}s)" >&2
+                return 0
+            fi
+        done
+
+        if [ "$attempt" -lt "$max_enter_retries" ]; then
+            echo "INFO:   $target: no response after ${wait_per_attempt}s, retrying Enter ($attempt/$max_enter_retries)..." >&2
+        fi
+    done
+
+    echo "WARN:   $target: prompt may not have been accepted after $max_enter_retries retries" >&2
+    return 1
+}
+
+# Wait for all Claude Code instances to be ready, then send initial prompts.
+# Reads initial_prompt from agents.json for each pane.
+send_initial_prompts() {
+    echo "INFO: Waiting for Claude Code instances to be ready..." >&2
+
+    # Collect all targets and their prompts
+    declare -A pending_prompts
+
+    # Rakuen pane
+    local rakuen_prompt
+    rakuen_prompt=$(get_pane_field_optional rakuen 0 initial_prompt)
+    rakuen_prompt=$(expand_placeholders "$rakuen_prompt")
+    if [ -n "$rakuen_prompt" ]; then
+        pending_prompts["rakuen:0.0"]="$rakuen_prompt"
+    fi
+
+    # Multiagent panes
+    local pane_keys
+    pane_keys=$(get_pane_keys multiagent)
+    for idx in $pane_keys; do
+        local target="multiagent:0.${idx}"
+        local prompt
+        prompt=$(get_pane_field_optional multiagent "$idx" initial_prompt)
+        prompt=$(expand_placeholders "$prompt")
+        if [ -n "$prompt" ]; then
+            pending_prompts["$target"]="$prompt"
+        fi
+    done
+
+    if [ ${#pending_prompts[@]} -eq 0 ]; then
+        echo "INFO: No initial prompts configured. Skipping." >&2
+        return 0
+    fi
+
+    local total=${#pending_prompts[@]}
+    echo "INFO: Waiting for $total agent(s) to become ready (no timeout)..." >&2
+
+    # Poll until ALL prompts are sent. No timeout -- every agent must receive
+    # its initial prompt for the system to function.
+    local elapsed=0
+
+    while [ ${#pending_prompts[@]} -gt 0 ]; do
+        for target in "${!pending_prompts[@]}"; do
+            if is_claude_ready "$target"; then
+                local prompt_text="${pending_prompts[$target]}"
+                echo "INFO: Sending initial prompt to $target..." >&2
+                send_prompt_with_retry "$target" "$prompt_text"
+                echo "INFO: Delivered initial prompt to $target (${elapsed}s)" >&2
+                unset 'pending_prompts['"$target"']'
+            fi
+        done
+
+        if [ ${#pending_prompts[@]} -gt 0 ]; then
+            sleep 5
+            elapsed=$((elapsed + 5))
+            # Progress update every 30 seconds
+            if (( elapsed % 30 == 0 )); then
+                echo "INFO: Still waiting for ${#pending_prompts[@]}/$total agent(s)... (${elapsed}s) pending: ${!pending_prompts[*]}" >&2
+            fi
+        fi
+    done
+
+    echo "INFO: All $total initial prompts sent successfully. (${elapsed}s)" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+validate() {
+    local valid=true
+    local errors=()
+
+    # V1: rakuen session exists
+    if ! tmux has-session -t rakuen 2>/dev/null; then
+        valid=false
+        errors+=("Session 'rakuen' does not exist")
+    fi
+
+    # V2: multiagent session exists
+    if ! tmux has-session -t multiagent 2>/dev/null; then
+        valid=false
+        errors+=("Session 'multiagent' does not exist")
+    fi
+
+    local rakuen_exists=false
+    local multiagent_exists=false
+    local pane_count=0
+    local pane_meta=""
+
+    if tmux has-session -t rakuen 2>/dev/null; then
+        rakuen_exists=true
+    fi
+
+    if tmux has-session -t multiagent 2>/dev/null; then
+        multiagent_exists=true
+
+        # V3: pane count
+        pane_count=$(tmux list-panes -t multiagent:0 -F '#{pane_index}' | wc -l)
+        if [ "$pane_count" -ne 9 ]; then
+            valid=false
+            errors+=("Expected 9 panes in multiagent, got $pane_count")
+        fi
+
+        # V4: pane indices 0..8
+        local indices
+        indices=$(tmux list-panes -t multiagent:0 -F '#{pane_index}' | sort -n | tr '\n' ',')
+        if [ "$indices" != "0,1,2,3,4,5,6,7,8," ]; then
+            valid=false
+            errors+=("Pane indices not 0..8: got $indices")
+        fi
+
+        # V5: pane titles
+        pane_meta="{"
+        local pane_keys
+        pane_keys=$(get_pane_keys multiagent)
+
+        for idx in $pane_keys; do
+            local target="multiagent:0.${idx}"
+            local actual_title
+            actual_title=$(tmux display-message -t "$target" -p '#{pane_title}' 2>/dev/null || echo "")
+            local expected_title
+            expected_title=$(get_pane_field multiagent "$idx" title)
+
+            local title_ok="true"
+            if [ "$actual_title" != "$expected_title" ]; then
+                title_ok="false"
+                errors+=("Pane $target title mismatch: expected '$expected_title', got '$actual_title'")
+            fi
+
+            if [ "$idx" != "0" ]; then
+                pane_meta+=","
+            fi
+            pane_meta+="\"$target\":{\"expected_title\":\"$expected_title\",\"actual_title\":\"$actual_title\",\"title_ok\":$title_ok}"
+        done
+        pane_meta+="}"
+    fi
+
+    # Also check rakuen pane title
+    if [ "$rakuen_exists" = true ]; then
+        local rakuen_title
+        rakuen_title=$(tmux display-message -t rakuen:0.0 -p '#{pane_title}' 2>/dev/null || echo "")
+        local expected_rakuen_title
+        expected_rakuen_title=$(get_pane_field rakuen 0 title)
+        if [ "$rakuen_title" != "$expected_rakuen_title" ]; then
+            errors+=("Pane rakuen:0.0 title mismatch: expected '$expected_rakuen_title', got '$rakuen_title'")
+        fi
+    fi
+
+    # Build JSON output
+    local errors_json="["
+    local first=true
+    for err in "${errors[@]+"${errors[@]}"}"; do
+        if [ "$first" = true ]; then
+            first=false
+        else
+            errors_json+=","
+        fi
+        # Escape quotes in error message
+        err="${err//\"/\\\"}"
+        errors_json+="\"$err\""
+    done
+    errors_json+="]"
+
+    if [ ${#errors[@]} -gt 0 ]; then
+        valid=false
+    fi
+
+    local pane_json="${pane_meta:-{}}"
+
+    cat <<EOJSON
+{
+  "valid": $valid,
+  "errors": $errors_json,
+  "sessions": {
+    "rakuen": {"exists": $rakuen_exists},
+    "multiagent": {"exists": $multiagent_exists, "pane_count": $pane_count}
+  },
+  "pane_meta": $pane_json
+}
+EOJSON
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+    parse_args "$@"
+
+    # Compute per-repo workspace directory
+    WORKSPACE_DIR="$RAKUEN_HOME/workspaces/$(basename "$REPO_ROOT")"
+
+    # Check agents.json exists
+    if [ ! -f "$AGENTS_JSON" ]; then
+        echo "ERROR: agents.json not found at $AGENTS_JSON" >&2
+        exit 1
+    fi
+
+    # Check tmux is available
+    if ! command -v tmux &>/dev/null; then
+        echo "ERROR: tmux is not installed. Please install tmux first." >&2
+        exit 1
+    fi
+
+    if [ "$VERIFY_ONLY" = false ]; then
+        # Initialize per-repo workspace (queue, dashboard, config)
+        initialize_runtime
+
+        build_rakuen_session
+        build_multiagent_session
+        # Short pause for tmux to settle
+        sleep 0.5
+
+        # Send initial prompts to all agents after Claude Code starts
+        send_initial_prompts
+    fi
+
+    # Run validation
+    local result
+    result=$(validate)
+    echo "$result"
+
+    # Strict mode: exit 1 if invalid
+    if [ "$STRICT" = true ]; then
+        local is_valid
+        is_valid=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['valid'])")
+        if [ "$is_valid" = "False" ]; then
+            echo "ERROR: Validation failed in strict mode." >&2
+            exit 1
+        fi
+    fi
+}
+
+main "$@"

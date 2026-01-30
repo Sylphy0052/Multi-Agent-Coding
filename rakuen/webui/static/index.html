@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rakuen Web UI</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header id="header">
+        <div class="header-tabs">
+            <button id="tab-activity" class="tab-btn active">Activity</button>
+            <button id="tab-tmux" class="tab-btn">Tmux View</button>
+        </div>
+        <div class="header-status">
+            <span class="dot dot-unknown" id="tmux-dot"></span>
+            <span id="tmux-status">tmux: checking...</span>
+            <span class="dot dot-unknown" id="valid-dot"></span>
+            <span id="validation-status">Valid: checking...</span>
+            <span id="port-info"></span>
+        </div>
+        <button id="settings-btn" class="icon-btn" title="Settings">&#x2699;</button>
+    </header>
+
+    <!-- Main Content -->
+    <main id="main">
+        <!-- Activity View -->
+        <section id="activity-view" class="view">
+            <div id="activity-timeline" class="activity-timeline"></div>
+            <aside id="dashboard-panel">
+                <div class="dashboard-title">Dashboard</div>
+                <div id="dashboard-content" class="dashboard-content">No dashboard data</div>
+            </aside>
+        </section>
+
+        <!-- Tmux View -->
+        <section id="tmux-view" class="view" style="display:none">
+            <div id="tmux-left" class="tmux-left"></div>
+            <div id="tmux-grid" class="tmux-grid"></div>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer id="footer">
+        <select id="preset-select">
+            <option value="" disabled selected>Preset...</option>
+        </select>
+        <textarea id="input" rows="2" placeholder="Enter command for UI-chan..."></textarea>
+        <button id="send-btn" class="btn-send">Send</button>
+        <button id="cancel-btn" class="btn-cancel">Cancel</button>
+    </footer>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal-overlay" style="display:none">
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <span class="modal-title">Settings</span>
+                <button class="modal-close" data-close="settings-modal">&times;</button>
+            </div>
+            <div id="settings-body" class="modal-body"></div>
+            <div class="modal-footer">
+                <button class="btn-close" data-close="settings-modal">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pane Zoom Modal -->
+    <div id="pane-modal" class="modal-overlay" style="display:none">
+        <div class="modal-dialog modal-dialog-lg">
+            <div class="modal-header">
+                <span id="pane-modal-title" class="modal-title"></span>
+                <button class="modal-close" data-close="pane-modal">&times;</button>
+            </div>
+            <pre id="pane-modal-content" class="pane-modal-output"></pre>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

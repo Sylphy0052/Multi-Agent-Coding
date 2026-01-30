@@ -1,209 +1,286 @@
-# Multi-Agent-Coding
+# Rakuen - Multi-Agent tmux Orchestration with Web UI
 
-複数の Claude Code エージェントを協調させ, ソフトウェア開発タスクをオーケストレーションするシステム。
+WSL上で `rakuen-web` コマンドを実行するだけで, 階層型マルチエージェント tmux 環境と Web UI を起動するシステム.
+Claude Code + tmux を使った並列開発基盤.
 
-Web UI からプロンプトを投入すると, **UIちゃん**(受付) → **AIちゃん**(分解/統合) → **Kobito**(実作業ワーカー群) の3役がバックグラウンドで連携し, **仕様書作成 → 実装 → テスト** の3フェーズパイプラインを自動実行する。
-
-## 主な特徴
-
-- **Web UI** でジョブ投入, リアルタイムダッシュボード, フェーズ承認
-- **3フェーズワークフロー** (spec → impl → test) と品質ゲート
-- **キャラクター駆動のマルチエージェント** (ペルソナ設定で口調/判断基準を差し替え可能)
-- **Git 統合** (main ← develop ← job ブランチ戦略, 承認後マージ, 監査トレース)
-- **同時ジョブ管理** (リソース自動推定による max\_jobs 制御, キューイング)
-- **tmux ベースの並列実行** (Claude Code CLI を多重起動)
-- **ワンコマンド起動** (`./start.sh`)
-
-## アーキテクチャ概要
+## 概要
 
 ```text
-┌─────────────┐    HTTP/SSE    ┌──────────────────────┐    tmux send-keys    ┌─────────────────┐
-│  Web UI     │ ◄────────────► │  API Server          │ ──────────────────► │  Claude Code    │
-│  (React)    │                │  (Fastify)           │                     │  × N (Kobito)   │
-│             │                │                      │                     │                 │
-│  - 入力     │                │  Orchestrator Core   │                     │  tmux session   │
-│  - ダッシュ │                │  - Scheduler         │                     │  per job        │
-│  - 承認     │                │  - Planner (AIちゃん)│                     │                 │
-└─────────────┘                │  - Aggregator        │                     └─────────────────┘
-                               │  - QualityGate       │
-                               │  - RetryManager      │
-                               │                      │
-                               │  State Store (YAML)  │
-                               │  Git Operations      │
-                               └──────────────────────┘
+ご主人様(人間)
+  |
+  v  [Web UI: 送信]
+UI-CHAN (ういちゃん)   ... tmux session: rakuen:0.0   プロジェクト統括
+  |
+  v  [YAML + send-keys]
+AI-CHAN (あいちゃん)   ... tmux session: multiagent:0.0   タスク管理・分配
+  |
+  v  [YAML + send-keys]
+KOBITO 1-8 (小人)     ... tmux session: multiagent:0.1 - 0.8   実働部隊
 ```
 
-## 技術スタック
+- Web UI からログ閲覧(全エージェント) + コマンド送信(ういちゃんのみ)
+- 2秒ポーリングによる自動更新
+- 作業リポジトリを汚さない(全資産は `~/rakuen/` に集約)
+- イベント駆動通信(YAML + tmux send-keys, エージェント間ポーリング禁止)
 
-| レイヤー | 技術 |
-| --- | --- |
-| Runtime | Node.js >= 20, TypeScript 5.7, ES Modules |
-| Backend | Fastify 5, pino, neverthrow, js-yaml, nanoid |
-| Frontend | React 19, Vite 6, TanStack Query 5, TailwindCSS 3, React Router 7 |
-| Shared | Zod (スキーマ検証), ドメイン型定義 |
-| Infra | tmux (エージェント実行), Git (ブランチ/マージ), proper-lockfile (排他制御) |
-| Test | Vitest 3 |
+## 必要環境
 
-## 前提条件
-
-- **Node.js** >= 20.0.0
-- **npm** (Node.js に同梱)
-- **tmux** (エージェント実行に必須)
-- **git**
-- **Claude CLI** (タスク実行に必要)
+- **WSL2** (Ubuntu等)
+- **tmux**
+- **Python 3.10+**
+- **bash**
+- **Claude Code CLI** (`claude` コマンド)
 
 ## セットアップ
 
 ```bash
 # 1. リポジトリをクローン
-git clone https://github.com/<your-org>/Multi-Agent-Coding.git
-cd Multi-Agent-Coding
+git clone <repo-url>
+cd Multi-Agent-Codingv2
 
-# 2. セットアップスクリプトを実行 (依存チェック + ビルド + .env 生成)
-./scripts/setup.sh
+# 2. デプロイ
+bash rakuen/setup.sh
 
-# 3. 環境変数を編集
-cp .env.example .env
-# .env を開いて auth 情報などを設定
+# 3. シェル再読み込み(PATH反映)
+source ~/.bashrc
 ```
 
-## 起動
+`setup.sh` は以下を実行します:
 
-### 本番モード
+- `rakuen/` を `/home/$USER/rakuen/` にコピー
+- `bin/rakuen-web`, `bin/rakuen-launch`, `bin/rakuen-agent-start` に実行権限を付与
+- Python venv を作成
+- PATH に `/home/$USER/rakuen/bin` を追加(`.bashrc`)
+
+## 使い方
 
 ```bash
-./start.sh
+# 任意の作業ディレクトリで実行
+cd ~/your-project
+rakuen-web
 ```
 
-依存チェック → npm install → ビルド → 状態ディレクトリ初期化 → API サーバ起動 をワンコマンドで実行する。
-起動後 `http://localhost:3000` でアクセス可能。
+ブラウザで `http://127.0.0.1:8080` を開くと Web UI が表示されます.
 
-### 開発モード
+### オプション
 
-```bash
-./scripts/dev.sh
-```
+| オプション | 説明 |
+| ----------- | ------ |
+| `--port <N>` | 開始ポートを指定(デフォルト: 8080) |
+| `--strict` | 整合性検証に失敗した場合, 起動を中止 |
+| `--help` | ヘルプを表示 |
 
-バックエンド (tsx watch) + フロントエンド (Vite HMR) を同時起動する。
+### ポート競合時
 
-- Backend: `http://localhost:3000/api`
-- Frontend: `http://localhost:5173`
+8080 が使用中の場合, 8081, 8082, ... と自動インクリメントします(上限: 8099).
 
-### ヘルスチェック
+## アーキテクチャ
 
-```bash
-./scripts/health-check.sh
-```
+### エージェント階層
 
-## プロジェクト構成
+| 役割 | 名前 | tmux target | 責務 |
+| ------ | ------ | ------------- | ------ |
+| プロジェクト統括 | UI-CHAN (ういちゃん) | `rakuen:0.0` | 全体指揮. Web UIから送信可能 |
+| タスク管理 | AI-CHAN (あいちゃん) | `multiagent:0.0` | タスク分解/配分. 閲覧のみ |
+| 実働部隊 | KOBITO 1-8 (小人) | `multiagent:0.1-0.8` | 実行担当. 閲覧のみ |
+
+### 通信プロトコル
+
+- **上→下の指示**: YAML ファイルに内容を書き, tmux send-keys で相手を起こす
+- **下→上の報告**: dashboard.md 更新のみ(send-keys 禁止 = 割り込み防止)
+- **ポーリング禁止**: API代金節約のため, エージェント間ポーリングは行わない
+
+### 通信ファイル(ワークスペース内)
+
+| ファイル | 方向 | 用途 |
+| --------- | ------ | ------ |
+| `queue/uichan_to_aichan.yaml` | UI-CHAN → AI-CHAN | 指示伝達 |
+| `queue/tasks/kobito{N}.yaml` | AI-CHAN → KOBITO | 個別タスク割当 |
+| `queue/reports/kobito{N}_report.yaml` | KOBITO → AI-CHAN | 完了報告 |
+| `dashboard.md` | AI-CHAN → 人間 | 進捗ダッシュボード |
+
+### 環境変数
+
+| 変数 | 用途 | 例 |
+| ------ | ------ | ----- |
+| `RAKUEN_HOME` | 共有リソースのルート | `~/rakuen/` |
+| `RAKUEN_WORKSPACE` | 作業リポジトリ固有のワークスペース | `~/rakuen/workspaces/MyApp/` |
+| `RAKUEN_REPO_ROOT` | 作業対象リポジトリのパス | `/home/user/projects/MyApp` |
+| `RAKUEN_ROLE` | エージェントの役割 | `uichan`, `aichan`, `kobito1` |
+
+## Web UI
 
 ```text
-.
-├── backend/           # Fastify API サーバ + Orchestrator Core
-│   └── src/
-│       ├── app.ts             # サーバ初期化
-│       ├── config/            # YAML 設定読み込み
-│       ├── domain/            # ドメインモデル (Job, Task, Report, Trace)
-│       ├── orchestrator/      # スケジューラ, プランナー, アグリゲータ, 品質ゲート
-│       ├── tmux/              # tmux セッション/ペイン制御, Claude Code 実行
-│       ├── store/             # ファイルベース状態ストア
-│       ├── git/               # Git 操作 (ブランチ, マージ, ロック)
-│       ├── routes/            # API エンドポイント
-│       ├── personas/          # ペルソナ読み込み
-│       ├── events/            # イベントバス
-│       └── auth/              # Basic Auth ミドルウェア
-├── frontend/          # React SPA
-│   └── src/
-│       ├── pages/             # InputPage, JobListPage, JobDetailPage
-│       ├── components/        # PhaseCard, StatusBadge, TraceTimeline
-│       ├── hooks/             # useJob, useSSE
-│       └── api/               # HTTP クライアント, SSE
-├── shared/            # 共有型定義 + Zod スキーマ
-├── config/            # 設定ファイル
-│   ├── default.yaml           # メイン設定
-│   └── personas/              # キャラクタープロファイル (YAML)
-├── scripts/           # ユーティリティスクリプト
-├── docs/              # ドキュメント
-│   └── spec.md                # システム仕様書
-├── start.sh           # 本番起動スクリプト
-├── package.json       # モノレポワークスペース設定
-└── tsconfig.base.json # 共通 TypeScript 設定
++------------------------------------------------------+
+| [Status Bar] tmux: OK | Validation: OK | Port: 8080  |
++----------+-------------------------------------------+
+| [Agents] | [Log Area]                                |
+| > UI-chan |                                           |
+|   AI-chan |   (選択エージェントのログ表示)                |
+|   Kobi-1 |                                           |
+|   ...    |                                           |
+|   Kobi-8 |                                           |
++----------+-------------------------------------------+
+| [Preset Buttons]  [Input Field]  [Send]              |
++------------------------------------------------------+
 ```
 
-## API エンドポイント
+- **エージェントセレクタ**: ういちゃん(金)/あいちゃん(赤)/小人1-8(青) を切替
+- **ログ表示**: 選択エージェントの最新300行をポーリング表示
+- **送信**: ういちゃんへのみコマンド送信可能(あいちゃん/小人選択時は無効)
+- **プリセット**: 定型コマンドをワンクリック送信
+- **自動更新**: ON/OFF切替(デフォルトON, 2秒間隔)
 
-| メソッド | パス | 説明 |
-| --- | --- | --- |
-| `POST` | `/jobs` | ジョブ作成 |
-| `GET` | `/jobs` | ジョブ一覧 |
-| `GET` | `/jobs/{id}` | ジョブ詳細 |
-| `POST` | `/jobs/{id}/cancel` | ジョブキャンセル |
-| `GET` | `/jobs/{id}/dashboard` | ダッシュボードデータ |
-| `POST` | `/jobs/{id}/phases/{phase}/approve` | フェーズ承認 |
-| `POST` | `/jobs/{id}/phases/{phase}/reject` | フェーズ差戻し |
-| `GET` | `/api/events` | SSE (リアルタイム更新) |
-| `GET` | `/api/health` | ヘルスチェック (認証不要) |
+## API
 
-## 設定
+| Method | Path | 概要 |
+| -------- | ------ | ------ |
+| GET | `/api/health` | ヘルスチェック |
+| GET | `/api/status` | tmux状態 + 整合性検証結果 |
+| GET | `/api/pane?agent=<name>&lines=<N>` | ログ取得(lines: 50-1000, default 300) |
+| POST | `/api/send` | ういちゃんへコマンド送信(`{"text": "..."}`, 最大8KB) |
+| GET | `/api/presets` | プリセット定義取得 |
 
-メイン設定は `config/default.yaml`, 環境変数は `.env` で上書き可能。
+## ディレクトリ構成
 
-主要な設定項目:
-
-| 項目 | デフォルト | 説明 |
-| --- | --- | --- |
-| `server.port` | `3000` | API サーバポート |
-| `auth.username` / `auth.password` | `admin` / `changeme` | Basic Auth 認証情報 |
-| `orchestrator.max_jobs` | `auto` | 同時ジョブ数 (auto: リソース自動推定) |
-| `claude.model` | `sonnet` | Claude モデル |
-| `claude.max_budget_usd` | `5.0` | ジョブあたりの予算上限 (USD) |
-| `claude.timeout_seconds` | `600` | タスクタイムアウト (秒) |
-| `git.merge_policy` | `merge_commit` | マージ方式 (FF 無効) |
-
-詳細は [.env.example](.env.example) および [config/default.yaml](config/default.yaml) を参照。
-
-## ジョブ実行フロー
+### ソースリポジトリ
 
 ```text
-Web入力 → Job作成 → AIちゃん(タスク分解) → Kobito群(並列実行)
-    → AIちゃん(結果集約/品質ゲート) → 承認待ち → ユーザ承認
-    → Git マージ (job→develop) → 次フェーズ or 完了
+Multi-Agent-Codingv2/
+├── rakuen/                    # ソース実装(デプロイ元)
+├── sanko/                     # 参考実装(multi-agent-shogun)
+├── docs/                      # 仕様書・設計ドキュメント
+└── .codex_tasks/              # AI タスク実行記録
 ```
 
-**状態遷移**:
-`RECEIVED → PLANNING → DISPATCHED → RUNNING → AGGREGATING → WAITING_APPROVAL → APPROVED → COMMITTING → COMPLETED`
+### デプロイ先: 共有リソース(`~/rakuen/`)
 
-例外: `QUEUED` (max\_jobs 超過), `WAITING_RETRY` (一時障害), `FAILED` (恒久障害), `CANCELED`
-
-## ペルソナシステム
-
-| 役割 | キャラクター | 担当 |
-| --- | --- | --- |
-| **UIちゃん** | フレンドリーな受付 | ユーザ対話, 差分要約の表示, 承認サマリ |
-| **AIちゃん** | しっかり者のオーケストレータ | タスク分解, ワーカー配布, 結果統合, 品質ゲート |
-| **Kobito** | 勤勉なワーカー群 | Claude Code による実作業, 構造化レポート提出 |
-
-ペルソナ定義は `config/personas/` 内の YAML ファイルで管理。
-
-## 開発コマンド
-
-```bash
-# 全ワークスペースビルド
-npm run build
-
-# 全ワークスペーステスト
-npm run test
-
-# 全ワークスペースリント
-npm run lint
+```text
+~/rakuen/
+├── bin/
+│   ├── rakuen-web              # エントリポイント
+│   ├── rakuen-launch           # tmux構築(冪等)
+│   └── rakuen-agent-start      # エージェント起動
+├── webui/
+│   ├── app.py                  # HTTPサーバ(Python標準ライブラリのみ)
+│   └── static/
+│       ├── index.html
+│       ├── app.js
+│       └── style.css
+├── config/
+│   ├── agents.json             # pane定義(セッション/タイトル/環境変数/コマンド)
+│   ├── presets.json            # プリセットボタン定義
+│   ├── settings.yaml           # 言語・ログ・スキル設定
+│   └── projects.yaml           # プロジェクト管理
+├── instructions/               # エージェント指示書
+│   ├── uichan.md
+│   ├── aichan.md
+│   └── kobito.md
+├── templates/                  # テンプレート
+│   └── context_template.md
+├── skills/                     # ローカルスキル
+├── CLAUDE.md                   # システム構成ドキュメント
+├── .venv/                      # Python仮想環境
+└── logs/                       # 実行ログ
 ```
 
-## ロードマップ
+### デプロイ先: ワークスペース(`~/rakuen/workspaces/<repo>/`)
 
-- **MVP**: ワンコマンド起動, ファイルベース状態管理, 固定ロール, 承認フロー, 同時実行制御
-- **v1**: 品質ゲート強化, 成果物パイプライン可視化, 再起動耐性
-- **v2**: ロール設定変更, SQLite/Redis 移行, マルチユーザ/RBAC, スキル自動抽出
+リポジトリごとに独立したワークスペースが作成されます:
+
+```text
+~/rakuen/workspaces/<repo>/
+├── config/
+│   ├── settings.yaml           # 言語設定等
+│   └── projects.yaml           # プロジェクト一覧
+├── context/                    # プロジェクトコンテキスト
+├── memory/                     # メモリ(global_context.md等)
+├── queue/
+│   ├── uichan_to_aichan.yaml   # UI-CHAN → AI-CHAN 指示
+│   ├── tasks/kobito{N}.yaml    # AI-CHAN → KOBITO 割当(各小人専用)
+│   └── reports/kobito{N}_report.yaml  # KOBITO → AI-CHAN 報告
+├── status/master_status.yaml   # 全体進捗
+├── logs/                       # ログ
+└── dashboard.md                # 人間用ダッシュボード
+```
+
+## カスタマイズ
+
+### エージェント起動コマンド
+
+`~/rakuen/config/agents.json` を編集して各 pane の `command` を設定:
+
+```json
+{
+  "sessions": {
+    "rakuen": {
+      "window": 0,
+      "panes": {
+        "0": {
+          "name": "uichan",
+          "title": "UI-CHAN",
+          "env": {
+            "RAKUEN_ROLE": "uichan",
+            "RAKUEN_REPO_ROOT": "${REPO_ROOT}",
+            "RAKUEN_WORKSPACE": "${WORKSPACE_DIR}"
+          },
+          "instructions": "${RAKUEN_HOME}/instructions/uichan.md",
+          "command": "claude --model opus --dangerously-skip-permissions",
+          "initial_prompt": "セッション開始。..."
+        }
+      }
+    }
+  }
+}
+```
+
+`${REPO_ROOT}`, `${WORKSPACE_DIR}`, `${RAKUEN_HOME}` は実行時に自動展開されます.
+
+### プリセットボタン
+
+`~/rakuen/config/presets.json` を編集:
+
+```json
+{
+  "presets": [
+    {"id": "status", "label": "Status Report", "text": "Report current status of all agents and tasks."},
+    {"id": "dashboard", "label": "Update Dashboard", "text": "Update dashboard.md with the latest state of all tasks."},
+    {"id": "continue", "label": "Continue", "text": "Continue working on the current task."},
+    {"id": "stop", "label": "Stop", "text": "Stop current work and report the current state."}
+  ]
+}
+```
+
+### 言語設定
+
+`~/rakuen/config/settings.yaml` で言語を設定:
+
+```yaml
+language: ja  # ja, en, es, zh, ko, fr, de 等
+```
+
+- `ja`: キャラクター口調の日本語のみ
+- `ja` 以外: キャラクター口調 + ユーザー言語の翻訳を括弧で併記
+
+## 設計上の特徴
+
+- **外部依存ゼロ**: Python標準ライブラリのみ使用(pip install 不要)
+- **リポジトリ非汚染**: 作業リポジトリにファイルを生成しない
+- **ワークスペース分離**: リポジトリごとに独立したワークスペース(`~/rakuen/workspaces/<repo>/`)
+- **冪等性**: 既存tmuxセッションがあれば再利用(破壊しない)
+- **整合性検証**: pane title/環境変数をagents.json定義と照合
+- **イベント駆動**: YAML + send-keys による非ポーリング通信
+- **非ブロッキング**: UI-CHANは指示後即座に次の入力を受付可能
+- **割り込み防止**: 下→上の報告はファイル更新のみ(send-keys禁止)
+- **WSL限定**: 起動時にWSL環境を判定
+
+## ドキュメント
+
+- [仕様書](docs/specv1.md)
+- [実装計画書](docs/implementation-plan-v1.md)
+- [起動ガイド](docs/sanko-startup-guide.md)
+- [UI リデザイン仕様](docs/ui-redesign-spec.md)
 
 ## ライセンス
 
-TBD
+Private
