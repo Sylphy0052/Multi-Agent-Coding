@@ -9,7 +9,7 @@ language: ja
 # スキル設定
 skill:
   # スキル保存先(生成されたスキルはここに保存)
-  save_path: "~/.claude/skills/rakuen-generated/"
+  save_path: "~/.claude/skills/"
 
   # ローカルスキル保存先(このプロジェクト専用)
   local_path: "~/rakuen/skills/"

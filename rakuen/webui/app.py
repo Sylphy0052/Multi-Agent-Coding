@@ -12,12 +12,14 @@ Binds to 127.0.0.1 with auto-incrementing port (8080-8099).
 Uses only Python standard library modules.
 """
 
+import datetime
 import http.server
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -129,6 +131,17 @@ def _unquote_yaml(val):
 
 
 # ---------------------------------------------------------------------------
+# Watchdog constants
+# ---------------------------------------------------------------------------
+
+DEAD_COMMANDS = {"bash", "zsh", "sh", ""}
+WATCHDOG_INTERVAL = 30          # seconds between health checks
+WATCHDOG_INITIAL_DELAY = 120    # seconds to wait after startup
+MAX_RESTARTS_PER_WINDOW = 3     # max restarts per agent within window
+CIRCUIT_BREAKER_WINDOW = 600    # 10 minutes sliding window
+CIRCUIT_BREAKER_COOLDOWN = 300  # 5 minutes cooldown after trip
+
+# ---------------------------------------------------------------------------
 # Globals (set in main)
 # ---------------------------------------------------------------------------
 
@@ -136,6 +149,209 @@ RAKUEN_HOME = ""
 REPO_ROOT = ""
 WORKSPACE_DIR = ""
 STATIC_DIR = ""
+
+# Watchdog state
+_restart_state = {}             # {agent: {"attempts": [ts], "tripped_at": None|ts}}
+_restart_lock = threading.Lock()
+_agent_restart_locks = {}       # {agent: Lock} prevents concurrent restart of same agent
+_last_health = {}               # cached health check results
+_last_health_lock = threading.Lock()
+_watchdog_enabled = True
+_LOG_FILE = None
+
+
+# ---------------------------------------------------------------------------
+# Watchdog: logging, circuit breaker, health check, restart
+# ---------------------------------------------------------------------------
+
+
+def _log(level, message):
+    """Log a message to stderr and optionally to a log file."""
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] [{level}] {message}"
+    sys.stderr.write(line + "\n")
+    if _LOG_FILE:
+        try:
+            with open(_LOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
+
+
+def _can_restart(agent_name):
+    """Check if agent restart is allowed by the circuit breaker.
+
+    Returns (allowed: bool, reason: str).
+    """
+    with _restart_lock:
+        state = _restart_state.setdefault(
+            agent_name, {"attempts": [], "tripped_at": None}
+        )
+        now = time.time()
+
+        # If tripped, check cooldown
+        if state["tripped_at"] is not None:
+            elapsed = now - state["tripped_at"]
+            if elapsed < CIRCUIT_BREAKER_COOLDOWN:
+                remaining = int(CIRCUIT_BREAKER_COOLDOWN - elapsed)
+                return False, f"Circuit breaker tripped. Cooldown: {remaining}s remaining."
+            # Cooldown expired: reset
+            state["tripped_at"] = None
+            state["attempts"] = []
+
+        # Prune old attempts outside the window
+        cutoff = now - CIRCUIT_BREAKER_WINDOW
+        state["attempts"] = [t for t in state["attempts"] if t > cutoff]
+
+        if len(state["attempts"]) >= MAX_RESTARTS_PER_WINDOW:
+            state["tripped_at"] = now
+            return False, (
+                f"Circuit breaker tripped: {MAX_RESTARTS_PER_WINDOW} restarts"
+                f" in {CIRCUIT_BREAKER_WINDOW}s."
+            )
+
+        return True, ""
+
+
+def _record_restart(agent_name):
+    """Record a restart attempt for the circuit breaker."""
+    with _restart_lock:
+        state = _restart_state.setdefault(
+            agent_name, {"attempts": [], "tripped_at": None}
+        )
+        state["attempts"].append(time.time())
+
+
+def _get_agent_lock(agent_name):
+    """Get or create a per-agent restart lock."""
+    with _restart_lock:
+        if agent_name not in _agent_restart_locks:
+            _agent_restart_locks[agent_name] = threading.Lock()
+        return _agent_restart_locks[agent_name]
+
+
+def _check_agent_health(agent_name):
+    """Check health of a single agent via tmux.
+
+    Returns {"status": "alive"|"dead"|"session_missing", "command": "..."}.
+    """
+    target = AGENT_MAP.get(agent_name)
+    if not target:
+        return {"status": "unknown", "command": ""}
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", target, "-p", "#{pane_current_command}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        cmd = result.stdout.strip()
+        if result.returncode != 0 or not cmd:
+            return {"status": "session_missing", "command": ""}
+        if cmd in DEAD_COMMANDS:
+            return {"status": "dead", "command": cmd}
+        return {"status": "alive", "command": cmd}
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return {"status": "session_missing", "command": ""}
+
+
+def _check_all_health():
+    """Check health of all agents. Returns {agent_name: {status, command}}."""
+    result = {}
+    for agent_name in AGENT_MAP:
+        result[agent_name] = _check_agent_health(agent_name)
+    return result
+
+
+def _restart_agent(agent_name):
+    """Restart a single agent via rakuen-launch --restart-agent.
+
+    Returns {"ok": bool, "message": str}.
+    """
+    # Per-agent lock to prevent concurrent restarts
+    agent_lock = _get_agent_lock(agent_name)
+    if not agent_lock.acquire(blocking=False):
+        return {"ok": False, "message": f"Agent '{agent_name}' restart already in progress."}
+
+    try:
+        # Circuit breaker check
+        allowed, reason = _can_restart(agent_name)
+        if not allowed:
+            return {"ok": False, "message": reason}
+
+        # Record attempt
+        _record_restart(agent_name)
+
+        launch_script = os.path.join(RAKUEN_HOME, "bin", "rakuen-launch")
+        try:
+            result = subprocess.run(
+                [launch_script, REPO_ROOT, "--restart-agent", agent_name],
+                capture_output=True, text=True, timeout=180,
+            )
+            if result.returncode == 0:
+                try:
+                    data = json.loads(result.stdout.strip())
+                    if data.get("restarted"):
+                        _log("INFO", f"Agent '{agent_name}' restarted successfully.")
+                        return {"ok": True, "message": f"Agent '{agent_name}' restarted."}
+                except json.JSONDecodeError:
+                    pass
+                return {"ok": True, "message": f"Agent '{agent_name}' restart completed (exit 0)."}
+            else:
+                msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+                _log("ERROR", f"Agent '{agent_name}' restart failed: {msg}")
+                return {"ok": False, "message": msg}
+        except subprocess.TimeoutExpired:
+            _log("ERROR", f"Agent '{agent_name}' restart timed out (180s).")
+            return {"ok": False, "message": "Restart timed out (180s)."}
+        except FileNotFoundError:
+            return {"ok": False, "message": "rakuen-launch script not found."}
+    finally:
+        agent_lock.release()
+
+
+def _watchdog_loop():
+    """Background watchdog loop. Checks agent health and triggers restarts."""
+    global _last_health
+
+    _log("INFO", f"Watchdog: waiting {WATCHDOG_INITIAL_DELAY}s for initial setup...")
+    time.sleep(WATCHDOG_INITIAL_DELAY)
+    _log("INFO", "Watchdog: starting health monitoring.")
+
+    while _watchdog_enabled:
+        try:
+            health = _check_all_health()
+
+            with _last_health_lock:
+                _last_health = health
+
+            for agent_name, info in health.items():
+                if info["status"] == "dead":
+                    _log(
+                        "WARN",
+                        f"Watchdog: agent '{agent_name}' is dead"
+                        f" (command: {info['command']}). Attempting restart...",
+                    )
+                    result = _restart_agent(agent_name)
+                    _log(
+                        "INFO" if result["ok"] else "ERROR",
+                        f"Watchdog: restart of '{agent_name}': {result['message']}",
+                    )
+                elif info["status"] == "session_missing":
+                    _log(
+                        "ERROR",
+                        f"Watchdog: tmux session for '{agent_name}' is missing."
+                        " Cannot auto-restart.",
+                    )
+        except Exception as e:
+            _log("ERROR", f"Watchdog: unexpected error: {e}")
+
+        time.sleep(WATCHDOG_INTERVAL)
+
+
+def _start_watchdog():
+    """Start the watchdog daemon thread."""
+    thread = threading.Thread(target=_watchdog_loop, daemon=True, name="watchdog")
+    thread.start()
+    _log("INFO", "Watchdog thread started.")
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +382,8 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             self._handle_panes(parsed.query)
         elif path == "/api/dashboard":
             self._handle_dashboard()
+        elif path == "/api/agents/health":
+            self._handle_agents_health()
         elif path == "/" or path == "/index.html":
             self._serve_static("index.html")
         elif path.startswith("/static/"):
@@ -182,6 +400,10 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
 
         if path == "/api/send":
             self._handle_send()
+        elif path == "/api/send-escape":
+            self._handle_send_escape()
+        elif path == "/api/restart":
+            self._handle_restart()
         else:
             self._send_error(404, "Not found")
 
@@ -318,6 +540,22 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._send_error(500, "tmux not found")
 
+    def _handle_send_escape(self):
+        """POST /api/send-escape -> send Escape key to rakuen:0.0."""
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", "rakuen:0.0", "Escape"],
+                check=True,
+                timeout=5,
+            )
+            self._send_json({"ok": True})
+        except subprocess.CalledProcessError as e:
+            self._send_error(500, f"tmux send-keys failed: {e}")
+        except subprocess.TimeoutExpired:
+            self._send_error(500, "tmux send-keys timed out")
+        except FileNotFoundError:
+            self._send_error(500, "tmux not found")
+
     def _handle_presets(self):
         """GET /api/presets -> preset definitions from presets.json."""
         presets_path = os.path.join(RAKUEN_HOME, "config", "presets.json")
@@ -436,6 +674,80 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
 
         self._send_json({"content": content})
 
+    def _handle_agents_health(self):
+        """GET /api/agents/health -> per-agent health + circuit breaker status."""
+        with _last_health_lock:
+            health = dict(_last_health)
+
+        # If no cached data yet, fetch live
+        if not health:
+            health = _check_all_health()
+
+        result = {}
+        for agent_name in AGENT_MAP:
+            agent_health = health.get(agent_name, {"status": "unknown", "command": ""})
+            allowed, reason = _can_restart(agent_name)
+            result[agent_name] = {
+                "status": agent_health["status"],
+                "command": agent_health.get("command", ""),
+                "restart_allowed": allowed,
+                "circuit_breaker_reason": reason if not allowed else "",
+                "label": AGENT_LABELS.get(agent_name, agent_name),
+            }
+
+        self._send_json({"agents": result, "watchdog_active": _watchdog_enabled})
+
+    def _handle_restart(self):
+        """POST /api/restart -> restart a specific agent."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length == 0 or content_length > 1024:
+            self._send_error(400, "Invalid request body")
+            return
+
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_error(400, "Invalid JSON")
+            return
+
+        agent_name = data.get("agent", "").strip()
+        if not agent_name or agent_name not in AGENT_MAP:
+            self._send_error(
+                400,
+                f"Invalid agent. Must be one of: {', '.join(sorted(AGENT_MAP.keys()))}",
+            )
+            return
+
+        _log("INFO", f"Manual restart requested for agent '{agent_name}'.")
+
+        # Run restart in a thread to avoid blocking the HTTP response for 180s
+        def do_restart():
+            result = _restart_agent(agent_name)
+            _log(
+                "INFO" if result["ok"] else "ERROR",
+                f"Manual restart of '{agent_name}': {result['message']}",
+            )
+
+        # Check circuit breaker first to give immediate feedback
+        allowed, reason = _can_restart(agent_name)
+        if not allowed:
+            self._send_json({"ok": False, "message": reason}, status=503)
+            return
+
+        # Check if restart already in progress
+        agent_lock = _get_agent_lock(agent_name)
+        if not agent_lock.acquire(blocking=False):
+            self._send_json(
+                {"ok": False, "message": f"Agent '{agent_name}' restart already in progress."},
+                status=409,
+            )
+            return
+        agent_lock.release()
+
+        threading.Thread(target=do_restart, daemon=True).start()
+        self._send_json({"ok": True, "message": f"Restart initiated for agent '{agent_name}'."})
+
     # -- Static file serving ------------------------------------------------
 
     def _serve_static(self, file_path):
@@ -495,7 +807,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
 # ---------------------------------------------------------------------------
 
 def main():
-    global RAKUEN_HOME, REPO_ROOT, WORKSPACE_DIR, STATIC_DIR
+    global RAKUEN_HOME, REPO_ROOT, WORKSPACE_DIR, STATIC_DIR, _LOG_FILE
 
     RAKUEN_HOME = os.environ.get(
         "RAKUEN_HOME",
@@ -509,6 +821,11 @@ def main():
         ),
     )
     STATIC_DIR = os.path.join(RAKUEN_HOME, "webui", "static")
+
+    # Setup watchdog log file
+    log_dir = os.path.join(WORKSPACE_DIR, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    _LOG_FILE = os.path.join(log_dir, "watchdog.log")
 
     # Determine starting port
     port_start = int(os.environ.get("PORT_START", str(PORT_RANGE_START)))
@@ -538,6 +855,9 @@ def main():
     sys.stderr.write(f"  REPO_ROOT:     {REPO_ROOT}\n")
     sys.stderr.write(f"  Press Ctrl+C to stop.\n")
     sys.stderr.write(f"\n")
+
+    # Start watchdog thread
+    _start_watchdog()
 
     try:
         server.serve_forever()

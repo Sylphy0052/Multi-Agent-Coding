@@ -5,11 +5,15 @@ set -euo pipefail
 #
 # Usage:
 #   rakuen-launch <REPO_ROOT> [--verify-only] [--strict]
+#   rakuen-launch <REPO_ROOT> --check-health
+#   rakuen-launch <REPO_ROOT> --restart-agent <agent_name>
 #
 # Arguments:
-#   REPO_ROOT      Path to the working repository root
-#   --verify-only  Skip session creation, only run validation
-#   --strict       Exit 1 if validation fails
+#   REPO_ROOT              Path to the working repository root
+#   --verify-only          Skip session creation, only run validation
+#   --strict               Exit 1 if validation fails
+#   --check-health         Output per-agent health JSON and exit
+#   --restart-agent <name> Restart a single agent by logical name and exit
 
 # ---------------------------------------------------------------------------
 # Globals
@@ -20,6 +24,8 @@ REPO_ROOT=""
 WORKSPACE_DIR=""
 VERIFY_ONLY=false
 STRICT=false
+CHECK_HEALTH=false
+RESTART_AGENT=""
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -35,9 +41,18 @@ parse_args() {
 
     while [ $# -gt 0 ]; do
         case "$1" in
-            --verify-only) VERIFY_ONLY=true ;;
-            --strict)      STRICT=true ;;
-            *)             echo "Unknown option: $1" >&2; exit 1 ;;
+            --verify-only)   VERIFY_ONLY=true ;;
+            --strict)        STRICT=true ;;
+            --check-health)  CHECK_HEALTH=true ;;
+            --restart-agent)
+                shift
+                if [ $# -eq 0 ]; then
+                    echo "ERROR: --restart-agent requires an agent name" >&2
+                    exit 1
+                fi
+                RESTART_AGENT="$1"
+                ;;
+            *)               echo "Unknown option: $1" >&2; exit 1 ;;
         esac
         shift
     done
@@ -315,7 +330,7 @@ DEOF
 language: ja
 
 skill:
-  save_path: "~/.claude/skills/rakuen-generated/"
+  save_path: "~/.claude/skills/"
   local_path: "~/rakuen/skills/"
 
 logging:
@@ -589,6 +604,161 @@ send_initial_prompts() {
 }
 
 # ---------------------------------------------------------------------------
+# Agent health check & restart
+# ---------------------------------------------------------------------------
+
+# Resolve agent logical name to "session pane_index".
+# Usage: resolve_agent <name>
+# Output: "session_name pane_index" on stdout, returns 0 on success, 1 on failure
+resolve_agent() {
+    local name="$1"
+    python3 -c "
+import json, sys
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+for session_name, session in data['sessions'].items():
+    for idx, pane in session['panes'].items():
+        if pane['name'] == '$name':
+            print(f'{session_name} {idx}')
+            sys.exit(0)
+sys.exit(1)
+"
+}
+
+# Output per-agent health as JSON.
+# Detection: tmux display-message #{pane_current_command}
+#   bash/zsh/sh -> dead, otherwise -> alive, tmux error -> session_missing
+check_health() {
+    python3 -c "
+import json, subprocess, sys
+with open('$AGENTS_JSON') as f:
+    data = json.load(f)
+result = {}
+for session_name, session in data['sessions'].items():
+    for idx, pane in session['panes'].items():
+        target = f'{session_name}:0.{idx}'
+        name = pane['name']
+        try:
+            r = subprocess.run(
+                ['tmux', 'display-message', '-t', target, '-p', '#{pane_current_command}'],
+                capture_output=True, text=True, timeout=5)
+            cmd = r.stdout.strip()
+            if r.returncode != 0 or not cmd:
+                status = 'session_missing'
+                cmd = ''
+            elif cmd in ('bash', 'zsh', 'sh'):
+                status = 'dead'
+            else:
+                status = 'alive'
+        except Exception:
+            status, cmd = 'session_missing', ''
+        result[name] = {'status': status, 'command': cmd, 'target': target}
+print(json.dumps(result))
+"
+}
+
+# Restart a single agent in its existing tmux pane.
+# Steps: interrupt -> cd -> export env -> launch command -> wait ready -> send prompt
+# Usage: restart_single_agent <agent_name>
+# Output: JSON result on stdout
+restart_single_agent() {
+    local agent_name="$1"
+
+    # Resolve agent to session + pane index
+    local resolved
+    if ! resolved=$(resolve_agent "$agent_name"); then
+        echo "{\"restarted\": false, \"agent\": \"$agent_name\", \"error\": \"Unknown agent: $agent_name\"}"
+        return 1
+    fi
+
+    local session pane_idx
+    session=$(echo "$resolved" | awk '{print $1}')
+    pane_idx=$(echo "$resolved" | awk '{print $2}')
+    local target="${session}:0.${pane_idx}"
+
+    echo "INFO: Restarting agent '$agent_name' at $target..." >&2
+
+    # Check tmux session exists
+    if ! tmux has-session -t "$session" 2>/dev/null; then
+        echo "{\"restarted\": false, \"agent\": \"$agent_name\", \"error\": \"tmux session '$session' does not exist. Full re-launch required.\"}"
+        return 1
+    fi
+
+    # Step 1: Interrupt any running process
+    tmux send-keys -t "$target" C-c 2>/dev/null || true
+    sleep 2
+
+    # Step 2: Send 'exit' in case Claude is in interactive mode, then wait
+    tmux send-keys -t "$target" "exit" Enter 2>/dev/null || true
+    sleep 2
+
+    # Step 3: Ensure we have a shell prompt (wait up to 10s)
+    local wait_shell=0
+    while [ "$wait_shell" -lt 10 ]; do
+        local cur_cmd
+        cur_cmd=$(tmux display-message -t "$target" -p '#{pane_current_command}' 2>/dev/null || echo "")
+        case "$cur_cmd" in
+            bash|zsh|sh) break ;;
+        esac
+        sleep 1
+        wait_shell=$((wait_shell + 1))
+    done
+
+    # Step 4: Re-set working directory
+    tmux send-keys -t "$target" "cd $WORKSPACE_DIR" Enter
+    sleep 0.5
+
+    # Step 5: Re-export environment variables
+    while IFS='=' read -r key value; do
+        value=$(expand_placeholders "$value")
+        tmux send-keys -t "$target" "export ${key}=${value}" Enter
+    done < <(get_pane_env "$session" "$pane_idx")
+    sleep 0.5
+
+    # Step 6: Re-launch Claude Code
+    local cmd
+    cmd=$(build_launch_command "$session" "$pane_idx")
+    if [ -z "$cmd" ]; then
+        echo "{\"restarted\": false, \"agent\": \"$agent_name\", \"error\": \"No launch command configured for $agent_name\"}"
+        return 1
+    fi
+    tmux send-keys -t "$target" "$cmd" Enter
+    echo "INFO: Launch command sent to $target. Waiting for Claude readiness..." >&2
+
+    # Step 7: Wait for Claude to be ready (up to 120s)
+    local ready_wait=0
+    local max_ready_wait=120
+    while [ "$ready_wait" -lt "$max_ready_wait" ]; do
+        if is_claude_ready "$target"; then
+            echo "INFO: Claude is ready at $target (${ready_wait}s)" >&2
+            break
+        fi
+        sleep 5
+        ready_wait=$((ready_wait + 5))
+    done
+
+    if [ "$ready_wait" -ge "$max_ready_wait" ]; then
+        echo "WARN: Claude did not become ready at $target within ${max_ready_wait}s" >&2
+        echo "{\"restarted\": false, \"agent\": \"$agent_name\", \"error\": \"Claude did not become ready within ${max_ready_wait}s\"}"
+        return 1
+    fi
+
+    # Step 8: Re-send initial prompt
+    local initial_prompt
+    initial_prompt=$(get_pane_field_optional "$session" "$pane_idx" initial_prompt)
+    initial_prompt=$(expand_placeholders "$initial_prompt")
+
+    if [ -n "$initial_prompt" ]; then
+        echo "INFO: Sending initial prompt to $target..." >&2
+        send_prompt_with_retry "$target" "$initial_prompt"
+        echo "INFO: Initial prompt delivered to $target" >&2
+    fi
+
+    echo "{\"restarted\": true, \"agent\": \"$agent_name\", \"target\": \"$target\"}"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -726,6 +896,18 @@ main() {
     if ! command -v tmux &>/dev/null; then
         echo "ERROR: tmux is not installed. Please install tmux first." >&2
         exit 1
+    fi
+
+    # Health check mode: output JSON and exit
+    if [ "$CHECK_HEALTH" = true ]; then
+        check_health
+        exit 0
+    fi
+
+    # Restart agent mode: restart single agent and exit
+    if [ -n "$RESTART_AGENT" ]; then
+        restart_single_agent "$RESTART_AGENT"
+        exit $?
     fi
 
     if [ "$VERIFY_ONLY" = false ]; then
