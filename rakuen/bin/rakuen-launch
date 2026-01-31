@@ -187,42 +187,42 @@ QEOF
 assignments:
   kobito1:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito2:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito3:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito4:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito5:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito6:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito7:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
   kobito8:
     task_id: null
-    description: null
+    desc: null
     target_path: null
     status: idle
 QEOF
@@ -234,19 +234,19 @@ QEOF
 task:
   task_id: null
   parent_cmd: null
-  description: null
+  desc: null
   target_path: null
   status: idle
-  timestamp: ""
+  ts: ""
 TEOF
     done
 
     # Reset kobito report files (1-8)
     for i in $(seq 1 8); do
         cat > "$WORKSPACE_DIR/queue/reports/kobito${i}_report.yaml" << REOF
-worker_id: kobito${i}
+wid: kobito${i}
 task_id: null
-timestamp: ""
+ts: ""
 status: idle
 result: null
 REOF
@@ -382,6 +382,9 @@ build_rakuen_session() {
     # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
     tmux send-keys -t rakuen:0.0 "cd $WORKSPACE_DIR" Enter
 
+    # Enable pipe-pane logging
+    tmux pipe-pane -t rakuen:0.0 -o "cat >> $WORKSPACE_DIR/logs/uichan.log"
+
     # Set environment variables
     while IFS='=' read -r key value; do
         value=$(expand_placeholders "$value")
@@ -437,6 +440,11 @@ build_multiagent_session() {
 
         # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
         tmux send-keys -t "$target" "cd $WORKSPACE_DIR" Enter
+
+        # Enable pipe-pane logging
+        local agent_name
+        agent_name=$(get_pane_field multiagent "$idx" name)
+        tmux pipe-pane -t "$target" -o "cat >> $WORKSPACE_DIR/logs/${agent_name}.log"
 
         # Set environment variables
         while IFS='=' read -r key value; do

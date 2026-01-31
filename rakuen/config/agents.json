@@ -13,7 +13,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/uichan.md",
           "command": "MAX_THINKING_TOKENS=0 claude --model opus --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでね。重要: ういちゃんは自分で調査・分析・実装をしない。全てYAMLに書いてあいちゃんに委譲すること。Grep/Glob/Edit/WebFetch/WebSearch/Task使用禁止。完了したら、ご主人様に準備完了を報告してね。"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/uichan.md. Report ready."
         }
       }
     },
@@ -30,7 +30,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/aichan.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでくれ。完了後、指示待ち状態で停止だ。"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/aichan.md. Await commands."
         },
         "1": {
           "name": "kobito1",
@@ -42,7 +42,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人1ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "2": {
           "name": "kobito2",
@@ -54,7 +54,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人2ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "3": {
           "name": "kobito3",
@@ -66,7 +66,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人3ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "4": {
           "name": "kobito4",
@@ -78,7 +78,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人4ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "5": {
           "name": "kobito5",
@@ -90,7 +90,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人5ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "6": {
           "name": "kobito6",
@@ -102,7 +102,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人6ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "7": {
           "name": "kobito7",
@@ -114,7 +114,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人7ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         },
         "8": {
           "name": "kobito8",
@@ -126,7 +126,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/kobito.md",
           "command": "claude --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。ボクは小人8ちゃんだよ! 指示があるまで待機するね!"
+          "initial_prompt": "[System] Read CLAUDE.md & instructions/kobito.md. Await tasks."
         }
       }
     }
