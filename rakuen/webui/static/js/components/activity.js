@@ -16,6 +16,11 @@ function renderTimeline(entries) {
   const timeline = qs('#activity-timeline');
   if (!timeline) return;
 
+  // Auto-scroll only if user is already at (or near) the bottom
+  const scrollThreshold = 40;
+  const wasAtBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < scrollThreshold;
+  const prevScrollTop = timeline.scrollTop;
+
   timeline.innerHTML = '';
 
   if (!entries || !Array.isArray(entries) || entries.length === 0) {
@@ -40,8 +45,12 @@ function renderTimeline(entries) {
     timeline.appendChild(renderRegularEntry(entry));
   }
 
-  // Auto-scroll to bottom
-  timeline.scrollTop = timeline.scrollHeight;
+  // Auto-scroll to bottom only if user was already at bottom
+  if (wasAtBottom) {
+    timeline.scrollTop = timeline.scrollHeight;
+  } else {
+    timeline.scrollTop = prevScrollTop;
+  }
 }
 
 function renderAttentionEntry(entry) {

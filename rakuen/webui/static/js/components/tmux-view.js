@@ -46,8 +46,17 @@ export function initTmuxView() {
     }
     // Update modal content if open
     if (activeModalAgent && panes[activeModalAgent] !== undefined && paneModalContent) {
+      const scrollThreshold = 40;
+      const wasAtBottom = paneModalContent.scrollHeight - paneModalContent.scrollTop - paneModalContent.clientHeight < scrollThreshold;
+      const prevScrollTop = paneModalContent.scrollTop;
+
       paneModalContent.textContent = panes[activeModalAgent].text || '';
-      paneModalContent.scrollTop = paneModalContent.scrollHeight;
+
+      if (wasAtBottom) {
+        paneModalContent.scrollTop = paneModalContent.scrollHeight;
+      } else {
+        paneModalContent.scrollTop = prevScrollTop;
+      }
     }
   });
 

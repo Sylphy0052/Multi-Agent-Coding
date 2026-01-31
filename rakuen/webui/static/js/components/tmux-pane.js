@@ -105,8 +105,17 @@ export function createPane(agentName, opts = {}) {
   }
 
   function update(text) {
+    const scrollThreshold = 40;
+    const wasAtBottom = output.scrollHeight - output.scrollTop - output.clientHeight < scrollThreshold;
+    const prevScrollTop = output.scrollTop;
+
     output.textContent = text || '';
-    output.scrollTop = output.scrollHeight;
+
+    if (wasAtBottom) {
+      output.scrollTop = output.scrollHeight;
+    } else {
+      output.scrollTop = prevScrollTop;
+    }
   }
 
   function updateHealth(info) {
