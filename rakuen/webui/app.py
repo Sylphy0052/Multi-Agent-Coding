@@ -78,44 +78,97 @@ AGENT_LABELS = {
 
 
 def parse_simple_yaml(text):
-    """Parse a simple YAML list-of-dicts format.
+    """Parse YAML formats used by rakuen agents.
 
-    Handles entries like:
-      - task_id: cmd_001
-        timestamp: "2026-01-30T10:00:00"
-        action: some text here
+    Handles three structures written by agents:
+      1. List-of-dicts under a key:  queue:\\n  - id: ...\\n    key: val
+      2. Single dict under a key:    task:\\n  task_id: ...\\n  key: val
+      3. Flat dict (no nesting):     worker_id: ...\\ntask_id: ...
+    Also supports multi-line block scalars (key: |).
 
-    Returns a list of dicts. Skips malformed lines.
+    Returns a list of dicts.
     """
     if not text or not text.strip():
         return []
 
     items = []
     current = None
+    ml_key = None       # key currently collecting multi-line value
+    ml_indent = None    # indent level of multi-line content
 
-    for line in text.splitlines():
-        stripped = line.rstrip()
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        content = line.lstrip()
+        indent = len(line) - len(content)
 
-        # Skip empty lines and comments
-        if not stripped or stripped.startswith("#"):
+        # Empty lines and comments
+        if not content or content.startswith("#"):
+            if ml_key is not None and current is not None:
+                # Preserve blank line inside multi-line block
+                existing = current.get(ml_key, "")
+                if existing:
+                    current[ml_key] = existing + "\n"
             continue
 
-        # New list item: starts with "- "
-        if stripped.startswith("- "):
+        # Collecting multi-line block scalar
+        if ml_key is not None and current is not None:
+            if ml_indent is None:
+                # First content line after |  -> sets reference indent
+                ml_indent = indent
+                current[ml_key] = content
+                continue
+            if indent >= ml_indent:
+                existing = current.get(ml_key, "")
+                if existing:
+                    current[ml_key] = existing + "\n" + content
+                else:
+                    current[ml_key] = content
+                continue
+            # Indent decreased -> end multi-line, fall through
+            ml_key = None
+            ml_indent = None
+
+        # New list item (handles indented lists like "  - id: ...")
+        if content.startswith("- "):
             if current is not None:
                 items.append(current)
             current = {}
-            # The rest of the line may contain a key: value
-            rest = stripped[2:].strip()
-            if rest:
+            ml_key = None
+            ml_indent = None
+            rest = content[2:].strip()
+            if rest and ":" in rest:
                 key, _, val = rest.partition(":")
-                if _:
-                    current[key.strip()] = _unquote_yaml(val.strip())
-        elif current is not None and ":" in stripped:
-            # Continuation key: value (indented)
-            key, _, val = stripped.strip().partition(":")
-            if _:
-                current[key.strip()] = _unquote_yaml(val.strip())
+                val = val.strip()
+                if _ and val == "|":
+                    ml_key = key.strip()
+                    current[key.strip()] = ""
+                elif _ and val:
+                    current[key.strip()] = _unquote_yaml(val)
+            continue
+
+        # key: value line
+        if ":" in content:
+            key, _, val = content.partition(":")
+            key = key.strip()
+            val = val.strip()
+
+            if not val:
+                # Section header (queue:, task:, result:) -> skip
+                continue
+
+            if val == "|":
+                # Multi-line block scalar start
+                if current is None:
+                    current = {}
+                ml_key = key
+                ml_indent = None
+                current[key] = ""
+                continue
+
+            # Regular key: value
+            if current is None:
+                current = {}
+            current[key] = _unquote_yaml(val)
 
     if current is not None:
         items.append(current)
@@ -616,21 +669,36 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
 
         items = parse_simple_yaml(text)
         for item in items:
-            action = (
-                item.get("action")
-                or item.get("content")
-                or item.get("message")
-                or item.get("status")
-                or ""
-            )
+            # Skip idle / empty entries
+            task_id = item.get("task_id") or item.get("id")
+            status = item.get("status", "")
+            if status == "idle" and not task_id:
+                continue
+            if not task_id or task_id == "null":
+                continue
+
+            action = ""
+            for _k in ("command", "description", "action",
+                        "content", "message", "status"):
+                _v = item.get(_k, "")
+                if _v and _v != "null":
+                    action = _v
+                    break
             entries.append({
-                "timestamp": item.get("timestamp") or item.get("time"),
+                "timestamp": (
+                    item.get("timestamp") or item.get("time")
+                ),
                 "from": from_agent,
-                "from_label": AGENT_LABELS.get(from_agent, from_agent),
+                "from_label": AGENT_LABELS.get(
+                    from_agent, from_agent
+                ),
                 "to": to_agent,
-                "to_label": AGENT_LABELS.get(to_agent) if to_agent else None,
+                "to_label": (
+                    AGENT_LABELS.get(to_agent) if to_agent
+                    else None
+                ),
                 "action": str(action),
-                "task_id": item.get("task_id") or item.get("id"),
+                "task_id": task_id,
                 "type": entry_type,
             })
 
