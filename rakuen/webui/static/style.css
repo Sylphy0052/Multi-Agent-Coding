@@ -344,6 +344,16 @@ html, body {
     background: var(--color-kobito);
     color: #fff;
 }
+.flow-badge-attention {
+    background: var(--color-warning);
+    color: #1a1a1a;
+    animation: pulse-attention 2s infinite;
+}
+
+@keyframes pulse-attention {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
 
 .flow-timestamp {
     color: var(--text-muted);
@@ -382,6 +392,50 @@ html, body {
     padding: 4px 0 0 2px;
     word-break: break-word;
     line-height: 1.4;
+}
+
+/* --- Attention entry (pinned) --- */
+.flow-entry[data-type="attention"] {
+    border-left: 3px solid var(--color-warning);
+    background: rgba(255, 152, 0, 0.08);
+    margin-bottom: 8px;
+}
+.flow-entry[data-type="attention"]::after {
+    background: var(--color-warning);
+}
+
+.flow-attention-section {
+    color: var(--color-warning);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* --- Status badges --- */
+.flow-status {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+.flow-status-done {
+    background: #2e7d32;
+    color: #fff;
+}
+.flow-status-pending {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+}
+.flow-status-in_progress {
+    background: #1565c0;
+    color: #fff;
+}
+.flow-status-cancelled {
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    text-decoration: line-through;
 }
 
 /* --- Empty state --- */

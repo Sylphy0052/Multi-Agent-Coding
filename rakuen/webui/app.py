@@ -183,6 +183,30 @@ def _unquote_yaml(val):
     return val
 
 
+def _extract_md_section(text, heading_keyword):
+    """Extract body text under a ## heading containing *heading_keyword*.
+
+    Returns the text between the matched heading and the next ## heading,
+    or empty string if not found / body is empty.
+    """
+    lines = text.splitlines()
+    capturing = False
+    body_lines = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if capturing:
+                break  # reached next section
+            if heading_keyword in stripped:
+                capturing = True
+                continue  # skip the heading line itself
+        elif capturing:
+            body_lines.append(stripped)
+
+    return "\n".join(body_lines).strip()
+
+
 # ---------------------------------------------------------------------------
 # Watchdog constants
 # ---------------------------------------------------------------------------
@@ -654,8 +678,14 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 entries=entries,
             )
 
+        # 4. Dashboard attention items (要対応 / 伺い事項)
+        self._parse_dashboard_attention(entries)
+
         # Sort by timestamp ascending; null timestamps go to end
-        entries.sort(key=lambda e: (e["timestamp"] is None, e["timestamp"] or ""))
+        entries.sort(key=lambda e: (
+            e["timestamp"] is None,
+            e["timestamp"] or "",
+        ))
 
         self._send_json({"entries": entries})
 
@@ -700,7 +730,33 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 "action": str(action),
                 "task_id": task_id,
                 "type": entry_type,
+                "status": status,
             })
+
+    def _parse_dashboard_attention(self, entries):
+        """Parse dashboard.md for attention / inquiry sections."""
+        path = os.path.join(WORKSPACE_DIR, "dashboard.md")
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except (FileNotFoundError, UnicodeDecodeError):
+            return
+
+        for section in ("要対応", "伺い事項"):
+            content = _extract_md_section(text, section)
+            if content and content.strip() != "なし":
+                entries.append({
+                    "timestamp": None,
+                    "from": "system",
+                    "from_label": "System",
+                    "to": None,
+                    "to_label": None,
+                    "action": content.strip(),
+                    "task_id": None,
+                    "type": "attention",
+                    "status": "attention",
+                    "section": section,
+                })
 
     def _handle_panes(self, query_string):
         """GET /api/panes -> all 10 pane outputs."""

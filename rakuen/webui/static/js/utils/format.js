@@ -56,7 +56,23 @@ export function entryTypeLabel(type) {
     case "command":    return "指示";
     case "assignment": return "割当";
     case "report":     return "報告";
+    case "attention":  return "要対応";
     default:           return type || "---";
+  }
+}
+
+/**
+ * Returns a Japanese label for the entry status.
+ * @param {string} status
+ * @returns {string}
+ */
+export function statusLabel(status) {
+  switch (status) {
+    case "done":        return "完了";
+    case "pending":     return "待機";
+    case "in_progress": return "実行中";
+    case "cancelled":   return "中止";
+    default:            return "";
   }
 }
 
