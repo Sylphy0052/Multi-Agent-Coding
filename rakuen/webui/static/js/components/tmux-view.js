@@ -1,6 +1,7 @@
 import { qs } from '../utils/dom.js';
 import { agentLabel } from '../utils/format.js';
 import * as state from '../state.js';
+import * as api from '../api.js';
 import { createPane } from './tmux-pane.js';
 
 const GRID_AGENTS = [
@@ -14,13 +15,14 @@ export function initTmuxView() {
   const paneModal = qs('#pane-modal');
   const paneModalTitle = qs('#pane-modal-title');
   const paneModalContent = qs('#pane-modal-content');
+  const paneModalInput = qs('#pane-modal-input');
 
   const paneMap = {};
   let activeModalAgent = null;
 
-  // Create UI-chan pane in left panel
+  // Create UI-chan pane in left panel (interactive)
   if (tmuxLeft) {
-    const uiPane = createPane('uichan');
+    const uiPane = createPane('uichan', { interactive: true });
     paneMap['uichan'] = uiPane;
     tmuxLeft.appendChild(uiPane.element);
   }
@@ -39,15 +41,58 @@ export function initTmuxView() {
     if (!panes) return;
     for (const [agentName, pane] of Object.entries(paneMap)) {
       if (panes[agentName] !== undefined) {
-        pane.update(panes[agentName]);
+        pane.update(panes[agentName].text);
       }
     }
     // Update modal content if open
     if (activeModalAgent && panes[activeModalAgent] !== undefined && paneModalContent) {
-      paneModalContent.textContent = panes[activeModalAgent];
+      paneModalContent.textContent = panes[activeModalAgent].text || '';
       paneModalContent.scrollTop = paneModalContent.scrollHeight;
     }
   });
+
+  // Subscribe to agent health state
+  state.subscribe('agentHealth', (healthMap) => {
+    if (!healthMap) return;
+    for (const [agentName, pane] of Object.entries(paneMap)) {
+      if (healthMap[agentName] !== undefined) {
+        pane.updateHealth(healthMap[agentName]);
+      }
+    }
+  });
+
+  // Modal input send handler
+  function setupModalInput() {
+    if (!paneModalInput) return;
+    const textarea = paneModalInput.querySelector('.pane-modal-input-text');
+    const sendBtn = paneModalInput.querySelector('.pane-modal-send-btn');
+    if (!textarea || !sendBtn) return;
+
+    async function doModalSend() {
+      const text = textarea.value.trim();
+      if (!text) return;
+      sendBtn.textContent = 'Sending...';
+      sendBtn.disabled = true;
+      try {
+        await api.sendCommand(text);
+        textarea.value = '';
+      } catch (e) {
+        console.error('Modal send failed:', e);
+      } finally {
+        sendBtn.textContent = 'Send';
+        sendBtn.disabled = false;
+      }
+    }
+
+    sendBtn.addEventListener('click', doModalSend);
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        doModalSend();
+      }
+    });
+  }
+  setupModalInput();
 
   // Pane click handler via event delegation
   document.addEventListener('pane-open', (e) => {
@@ -63,6 +108,10 @@ export function initTmuxView() {
     if (paneModalContent) {
       paneModalContent.textContent = text || '';
       paneModalContent.scrollTop = paneModalContent.scrollHeight;
+    }
+    // Show/hide modal input bar based on agent
+    if (paneModalInput) {
+      paneModalInput.style.display = agent === 'uichan' ? 'flex' : 'none';
     }
     if (paneModal) {
       paneModal.style.display = 'flex';

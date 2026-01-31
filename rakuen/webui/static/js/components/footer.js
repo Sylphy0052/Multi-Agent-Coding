@@ -55,7 +55,7 @@ export function initFooter() {
     }
 
     try {
-      await api.sendCommand('Stop current work and report the current state.');
+      await api.sendEscape();
     } catch (e) {
       console.error('Cancel failed:', e);
     } finally {

@@ -72,6 +72,53 @@ export async function fetchDashboard() {
 }
 
 /**
+ * POST /api/send-escape -> send Escape key to uichan
+ * @returns {Promise<Object>}
+ */
+export async function sendEscape() {
+  try {
+    const res = await fetch("/api/send-escape", { method: "POST" });
+    return await res.json();
+  } catch (err) {
+    console.error("sendEscape failed:", err);
+    return { error: err.message };
+  }
+}
+
+/**
+ * GET /api/agents/health
+ * @returns {Promise<Object>}
+ */
+export async function fetchAgentHealth() {
+  try {
+    const res = await fetch("/api/agents/health");
+    return await res.json();
+  } catch (err) {
+    console.error("fetchAgentHealth failed:", err);
+    return { error: err.message };
+  }
+}
+
+/**
+ * POST /api/restart with JSON body {agent}
+ * @param {string} agentName
+ * @returns {Promise<Object>}
+ */
+export async function restartAgent(agentName) {
+  try {
+    const res = await fetch("/api/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent: agentName }),
+    });
+    return await res.json();
+  } catch (err) {
+    console.error("restartAgent failed:", err);
+    return { error: err.message };
+  }
+}
+
+/**
  * POST /api/send with JSON body {text}
  * @param {string} text
  * @returns {Promise<Object>}

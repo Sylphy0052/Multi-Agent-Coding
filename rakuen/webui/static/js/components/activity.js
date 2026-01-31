@@ -1,5 +1,5 @@
 import { qs } from '../utils/dom.js';
-import { agentColor, agentLabel, formatTimestamp, renderMarkdown } from '../utils/format.js';
+import { agentColor, agentLabel, formatTimestamp, renderMarkdown, entryTypeLabel } from '../utils/format.js';
 import * as state from '../state.js';
 
 export function initActivity() {
@@ -18,53 +18,84 @@ function renderTimeline(entries) {
 
   timeline.innerHTML = '';
 
-  if (!entries || !Array.isArray(entries)) return;
+  if (!entries || !Array.isArray(entries) || entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'flow-empty';
+    empty.textContent = 'アクティビティがありません';
+    timeline.appendChild(empty);
+    return;
+  }
 
   for (const entry of entries) {
     const div = document.createElement('div');
-    div.className = 'timeline-entry';
-    div.style.borderLeftColor = agentColor(entry.from);
+    div.className = 'flow-entry';
+    div.dataset.type = entry.type || 'command';
 
-    // Header
+    // --- Row 1: badge + timestamp ---
     const header = document.createElement('div');
-    header.className = 'entry-header';
+    header.className = 'flow-header';
+
+    const badge = document.createElement('span');
+    badge.className = 'flow-badge flow-badge-' + (entry.type || 'command');
+    badge.textContent = entryTypeLabel(entry.type);
+    header.appendChild(badge);
 
     const ts = document.createElement('span');
-    ts.className = 'entry-timestamp';
+    ts.className = 'flow-timestamp';
     ts.textContent = formatTimestamp(entry.timestamp);
     header.appendChild(ts);
 
-    const fromSpan = document.createElement('span');
-    fromSpan.className = 'entry-agent';
-    fromSpan.style.color = agentColor(entry.from);
-    fromSpan.textContent = agentLabel(entry.from);
-    header.appendChild(fromSpan);
-
-    if (entry.to) {
-      const arrow = document.createElement('span');
-      arrow.className = 'entry-arrow';
-      arrow.textContent = '\u2192';
-      header.appendChild(arrow);
-
-      const toSpan = document.createElement('span');
-      toSpan.className = 'entry-agent';
-      toSpan.style.color = agentColor(entry.to);
-      toSpan.textContent = agentLabel(entry.to);
-      header.appendChild(toSpan);
+    if (entry.task_id) {
+      const taskTag = document.createElement('span');
+      taskTag.className = 'flow-task-id';
+      taskTag.textContent = entry.task_id;
+      header.appendChild(taskTag);
     }
 
     div.appendChild(header);
 
-    // Body
-    const body = document.createElement('div');
-    body.className = 'entry-body';
-    let bodyText = '';
-    if (entry.task_id) {
-      bodyText += '[' + entry.task_id + '] ';
+    // --- Row 2: who did what (agent flow) ---
+    const agents = document.createElement('div');
+    agents.className = 'flow-agents';
+
+    const fromSpan = document.createElement('span');
+    fromSpan.className = 'flow-agent-name';
+    fromSpan.style.color = agentColor(entry.from);
+    fromSpan.textContent = agentLabel(entry.from);
+    agents.appendChild(fromSpan);
+
+    if (entry.to) {
+      const verb = document.createElement('span');
+      verb.className = 'flow-verb';
+      verb.textContent = entry.type === 'command' ? ' が ' : ' が ';
+      agents.appendChild(verb);
+
+      const toSpan = document.createElement('span');
+      toSpan.className = 'flow-agent-name';
+      toSpan.style.color = agentColor(entry.to);
+      toSpan.textContent = agentLabel(entry.to);
+      agents.appendChild(toSpan);
+
+      const action = document.createElement('span');
+      action.className = 'flow-verb';
+      action.textContent = entry.type === 'command' ? ' に指示' : ' に割当';
+      agents.appendChild(action);
+    } else {
+      const verb = document.createElement('span');
+      verb.className = 'flow-verb';
+      verb.textContent = ' が報告';
+      agents.appendChild(verb);
     }
-    bodyText += entry.action || '';
-    body.textContent = bodyText;
-    div.appendChild(body);
+
+    div.appendChild(agents);
+
+    // --- Row 3: action content ---
+    if (entry.action) {
+      const content = document.createElement('div');
+      content.className = 'flow-content';
+      content.textContent = entry.action;
+      div.appendChild(content);
+    }
 
     timeline.appendChild(div);
   }

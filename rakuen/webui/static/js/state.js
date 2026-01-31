@@ -7,6 +7,7 @@ const _state = {
   status: null,
   dashboardContent: "",
   presets: [],
+  agentHealth: {},
 };
 
 /** @type {Map<string, Set<Function>>} */

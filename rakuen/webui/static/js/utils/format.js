@@ -47,6 +47,20 @@ export function formatTimestamp(isoString) {
 }
 
 /**
+ * Returns a Japanese label for the entry type.
+ * @param {string} type - "command" | "assignment" | "report"
+ * @returns {string}
+ */
+export function entryTypeLabel(type) {
+  switch (type) {
+    case "command":    return "指示";
+    case "assignment": return "割当";
+    case "report":     return "報告";
+    default:           return type || "---";
+  }
+}
+
+/**
  * Minimal Markdown to HTML renderer.
  * Supports headings (#, ##, ###), unordered lists (- / *),
  * bold (**text**), inline code (`text`), and paragraphs.

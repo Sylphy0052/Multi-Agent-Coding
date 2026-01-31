@@ -23,6 +23,7 @@ function startPolling() {
   statusTimer = setInterval(() => {
     if (getSettings().autoRefresh) {
       fetchAndUpdateStatus();
+      fetchAndUpdateAgentHealth();
     }
   }, 30000);
 }
@@ -87,6 +88,17 @@ async function fetchAndUpdateStatus() {
   }
 }
 
+async function fetchAndUpdateAgentHealth() {
+  try {
+    const data = await api.fetchAgentHealth();
+    if (data.agents) {
+      state.set('agentHealth', data.agents);
+    }
+  } catch (e) {
+    console.error('Failed to fetch agent health:', e);
+  }
+}
+
 async function fetchAndUpdatePresets() {
   try {
     const data = await api.fetchPresets();
@@ -118,6 +130,7 @@ document.addEventListener('visibilitychange', () => {
   } else {
     fetchAndUpdateActiveTab();
     fetchAndUpdateStatus();
+    fetchAndUpdateAgentHealth();
     startPolling();
   }
 });
@@ -140,6 +153,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchAndUpdateStatus();
   fetchAndUpdateActiveTab();
   fetchAndUpdatePresets();
+  fetchAndUpdateAgentHealth();
 
   // 4. Start polling
   startPolling();
