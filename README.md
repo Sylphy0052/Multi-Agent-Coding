@@ -283,4 +283,4 @@ language: ja  # ja, en, es, zh, ko, fr, de 等
 
 ## ライセンス
 
-Private
+MIT
