@@ -60,6 +60,7 @@ workflow:
 files:
   task: "queue/tasks/kobito{N}.yaml"
   report: "queue/reports/kobito{N}_report.yaml"
+  activity_log: "queue/activity/kobito{N}.yaml"
 
 # ペイン設定
 panes:
@@ -222,6 +223,36 @@ skill_candidate:
 | 手順や知識が必要な作業 | yes |
 
 **注意**: `skill_candidate` の記入を忘れたレポートは不完全とみなすよ!
+
+## 作業進捗ログ(activityログ)
+
+WebUIのタイムラインに作業状況を表示するため、**以下のタイミングで** `queue/activity/kobito{N}.yaml` (自分の番号)にappendするよ!
+
+### 書くタイミング
+
+1. **タスク受信時** - タスクを受け取って作業を開始する時
+2. **主要マイルストーン時** - ファイル作成完了など大きな進捗があった時
+
+### フォーマット
+
+```yaml
+activity:
+  - id: act_001
+    timestamp: "2026-01-25T12:06:00"
+    action: "subtask_001を受信。作業開始!"
+    status: working
+  - id: act_002
+    timestamp: "2026-01-25T12:15:00"
+    action: "hello1.mdの作成完了!"
+    status: done
+```
+
+**注意**:
+
+- timestampは `date "+%Y-%m-%dT%H:%M:%S"` で取得すること(推測禁止)
+- idは `act_` + 連番(ファイル内でユニーク)
+- actionは日本語で簡潔に作業内容を記述
+- statusは `working`(作業中)または `done`(完了)
 
 ## 同一ファイル書き込み禁止(RACE-001)
 

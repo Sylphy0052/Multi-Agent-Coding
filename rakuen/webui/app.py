@@ -60,6 +60,7 @@ MIME_TYPES = {
 }
 
 AGENT_LABELS = {
+    "user": "User",
     "uichan": "UI-chan",
     "aichan": "AI-chan",
     "kobito1": "Kobito 1",
@@ -649,6 +650,15 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
         """GET /api/activity -> activity timeline entries from YAML files."""
         entries = []
 
+        # 0. User -> UI-chan inputs
+        self._parse_yaml_entries(
+            os.path.join(WORKSPACE_DIR, "queue", "user_to_uichan.yaml"),
+            entry_type="user_input",
+            from_agent="user",
+            to_agent="uichan",
+            entries=entries,
+        )
+
         # 1. UI-chan -> AI-chan commands
         self._parse_yaml_entries(
             os.path.join(WORKSPACE_DIR, "queue", "uichan_to_aichan.yaml"),
@@ -681,6 +691,27 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
         # 4. Dashboard attention items (要対応 / 伺い事項)
         self._parse_dashboard_attention(entries)
 
+        # 5. AI-chan activity log
+        self._parse_yaml_entries(
+            os.path.join(WORKSPACE_DIR, "queue", "activity", "aichan.yaml"),
+            entry_type="progress",
+            from_agent="aichan",
+            to_agent=None,
+            entries=entries,
+        )
+
+        # 6. Kobito N activity logs
+        for n in range(1, 9):
+            self._parse_yaml_entries(
+                os.path.join(
+                    WORKSPACE_DIR, "queue", "activity", f"kobito{n}.yaml",
+                ),
+                entry_type="progress",
+                from_agent=f"kobito{n}",
+                to_agent=None,
+                entries=entries,
+            )
+
         # Sort by timestamp ascending; null timestamps go to end
         entries.sort(key=lambda e: (
             e["timestamp"] is None,
@@ -708,7 +739,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 continue
 
             action = ""
-            for _k in ("command", "description", "action",
+            for _k in ("command", "description", "action", "summary",
                         "content", "message", "status"):
                 _v = item.get(_k, "")
                 if _v and _v != "null":

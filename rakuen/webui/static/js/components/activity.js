@@ -83,6 +83,11 @@ function renderRegularEntry(entry) {
   div.className = 'flow-entry';
   div.dataset.type = entry.type || 'command';
 
+  // Dynamic indent for progress entries based on agent role
+  if (entry.type === 'progress') {
+    div.style.marginLeft = entry.from === 'aichan' ? '20px' : '40px';
+  }
+
   // --- Row 1: badge + timestamp + task_id + status ---
   const header = document.createElement('div');
   header.className = 'flow-header';
@@ -139,8 +144,19 @@ function renderRegularEntry(entry) {
 
     const action = document.createElement('span');
     action.className = 'flow-verb';
-    action.textContent = entry.type === 'command' ? ' に指示' : ' に割当';
+    if (entry.type === 'user_input') {
+      action.textContent = ' に入力';
+    } else if (entry.type === 'command') {
+      action.textContent = ' に指示';
+    } else {
+      action.textContent = ' に割当';
+    }
     agents.appendChild(action);
+  } else if (entry.type === 'progress') {
+    const verb = document.createElement('span');
+    verb.className = 'flow-verb';
+    verb.textContent = ' が作業中';
+    agents.appendChild(verb);
   } else {
     const verb = document.createElement('span');
     verb.className = 'flow-verb';

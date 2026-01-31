@@ -2,6 +2,7 @@
 
 /** Agent metadata map */
 export const AGENT_INFO = {
+  user:    { label: "User",    color: "#4caf50", type: "user" },
   uichan:  { label: "UI-chan",  color: "#d4a017", type: "uichan" },
   aichan:  { label: "AI-chan",  color: "#dc143c", type: "aichan" },
   kobito1: { label: "Kobito 1", color: "#4682b4", type: "kobito" },
@@ -53,7 +54,9 @@ export function formatTimestamp(isoString) {
  */
 export function entryTypeLabel(type) {
   switch (type) {
+    case "user_input": return "入力";
     case "command":    return "指示";
+    case "progress":   return "作業";
     case "assignment": return "割当";
     case "report":     return "報告";
     case "attention":  return "要対応";
@@ -71,6 +74,7 @@ export function statusLabel(status) {
     case "done":        return "完了";
     case "pending":     return "待機";
     case "in_progress": return "実行中";
+    case "working":     return "作業中";
     case "cancelled":   return "中止";
     default:            return "";
   }

@@ -77,6 +77,7 @@ files:
   input: queue/uichan_to_aichan.yaml
   task_template: "queue/tasks/kobito{N}.yaml"
   report_pattern: "queue/reports/kobito{N}_report.yaml"
+  activity_log: queue/activity/aichan.yaml
   status: status/master_status.yaml
   dashboard: dashboard.md
 
@@ -224,6 +225,37 @@ task:
   status: assigned
   timestamp: "2026-01-25T12:00:00"
 ```
+
+## 作業進捗ログ(activityログ)
+
+WebUIのタイムラインに自分の作業状況を表示するため、**以下のタイミングで** `queue/activity/aichan.yaml` にappendする。
+
+### 書くタイミング
+
+1. **コマンド受信時** - 指示を受けて分析を開始する時
+2. **タスク分解完了時** - 小人にタスクを配分する時
+3. **全報告統合完了時** - 全小人の報告を受信して結果をまとめた時
+
+### フォーマット
+
+```yaml
+activity:
+  - id: act_001
+    timestamp: "2026-01-25T12:00:00"
+    action: "cmd_001を受信。タスク分析を開始"
+    status: working
+  - id: act_002
+    timestamp: "2026-01-25T12:05:00"
+    action: "3つのサブタスクに分解。小人1,2,3に配分完了"
+    status: done
+```
+
+**注意**:
+
+- timestampは `date "+%Y-%m-%dT%H:%M:%S"` で取得すること(推測禁止)
+- idは `act_` + 連番(ファイル内でユニーク)
+- actionは日本語で簡潔に作業内容を記述
+- statusは `working`(作業中)または `done`(完了)
 
 ## 「起こされたら全確認」方式
 

@@ -12,6 +12,7 @@
     --text-secondary: #a0a0a0;
     --text-muted: #666666;
     --border-color: #444444;
+    --color-user: #4caf50;
     --color-uichan: #d4a017;
     --color-aichan: #dc143c;
     --color-kobito: #4682b4;
@@ -35,6 +36,7 @@
     --text-secondary: #555555;
     --text-muted: #999999;
     --border-color: #d0d0d0;
+    --color-user: #27ae60;
     --color-uichan: #b8860b;
     --color-aichan: #c0392b;
     --color-kobito: #2980b9;
@@ -285,14 +287,28 @@ html, body {
 .flow-entry[data-type="report"]::after {
     background: var(--color-kobito);
 }
+.flow-entry[data-type="user_input"]::after {
+    background: var(--color-user);
+}
+.flow-entry[data-type="progress"]::after {
+    background: var(--color-warning);
+}
 
 /* Type-specific left accent */
+.flow-entry[data-type="user_input"] {
+    border-left: 3px solid var(--color-user);
+}
 .flow-entry[data-type="command"] {
     border-left: 3px solid var(--color-uichan);
 }
 .flow-entry[data-type="assignment"] {
     border-left: 3px solid var(--color-aichan);
     margin-left: 20px;
+}
+.flow-entry[data-type="progress"] {
+    border-left: 3px solid var(--color-warning);
+    /* margin-left set dynamically in JS based on agent */
+    opacity: 0.85;
 }
 .flow-entry[data-type="report"] {
     border-left: 3px solid var(--color-kobito);
@@ -332,8 +348,16 @@ html, body {
     letter-spacing: 0.5px;
 }
 
+.flow-badge-user_input {
+    background: var(--color-user);
+    color: #fff;
+}
 .flow-badge-command {
     background: var(--color-uichan);
+    color: #1a1a1a;
+}
+.flow-badge-progress {
+    background: var(--color-warning);
     color: #1a1a1a;
 }
 .flow-badge-assignment {
