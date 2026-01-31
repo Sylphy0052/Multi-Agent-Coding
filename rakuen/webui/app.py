@@ -9,7 +9,7 @@ Provides API endpoints for:
 - Preset command listing
 
 Binds to 127.0.0.1 with auto-incrementing port (8080-8099).
-Uses only Python standard library modules.
+Requires: PyYAML
 """
 
 import datetime
@@ -23,6 +23,8 @@ import threading
 import time
 import urllib.parse
 from pathlib import Path
+
+import yaml
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -74,114 +76,80 @@ AGENT_LABELS = {
 }
 
 # ---------------------------------------------------------------------------
-# Minimal YAML parser (list-of-dicts subset only)
+# YAML parsing helpers (PyYAML-based)
 # ---------------------------------------------------------------------------
 
+# Short key -> full key mapping for token-reduced YAML
+_SHORT_KEY_MAP = {
+    "ts": "timestamp",
+    "cmd": "command",
+    "wid": "worker_id",
+    "desc": "description",
+    "sc": "skill_candidate",
+    "st": "status",
+}
 
-def parse_simple_yaml(text):
-    """Parse YAML formats used by rakuen agents.
+
+def _normalize_keys(item):
+    """Apply short-key to full-key mapping on a dict.
+
+    Short keys take priority; full keys serve as fallback.
+    """
+    if not isinstance(item, dict):
+        return item
+    result = {}
+    for k, v in item.items():
+        full_key = _SHORT_KEY_MAP.get(k, k)
+        if full_key not in result:
+            result[full_key] = v
+    return result
+
+
+def _extract_yaml_items(text):
+    """Parse YAML text and return a flat list of dicts.
 
     Handles three structures written by agents:
-      1. List-of-dicts under a key:  queue:\\n  - id: ...\\n    key: val
-      2. Single dict under a key:    task:\\n  task_id: ...\\n  key: val
+      1. List-of-dicts under a key:  queue:\\n  - id: ...
+      2. Single dict under a key:    task:\\n  task_id: ...
       3. Flat dict (no nesting):     worker_id: ...\\ntask_id: ...
-    Also supports multi-line block scalars (key: |).
 
-    Returns a list of dicts.
+    Returns a list of dicts with short keys normalized to full keys.
     """
     if not text or not text.strip():
         return []
 
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+
+    if data is None:
+        return []
+
     items = []
-    current = None
-    ml_key = None       # key currently collecting multi-line value
-    ml_indent = None    # indent level of multi-line content
 
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        content = line.lstrip()
-        indent = len(line) - len(content)
-
-        # Empty lines and comments
-        if not content or content.startswith("#"):
-            if ml_key is not None and current is not None:
-                # Preserve blank line inside multi-line block
-                existing = current.get(ml_key, "")
-                if existing:
-                    current[ml_key] = existing + "\n"
-            continue
-
-        # Collecting multi-line block scalar
-        if ml_key is not None and current is not None:
-            if ml_indent is None:
-                # First content line after |  -> sets reference indent
-                ml_indent = indent
-                current[ml_key] = content
-                continue
-            if indent >= ml_indent:
-                existing = current.get(ml_key, "")
-                if existing:
-                    current[ml_key] = existing + "\n" + content
-                else:
-                    current[ml_key] = content
-                continue
-            # Indent decreased -> end multi-line, fall through
-            ml_key = None
-            ml_indent = None
-
-        # New list item (handles indented lists like "  - id: ...")
-        if content.startswith("- "):
-            if current is not None:
-                items.append(current)
-            current = {}
-            ml_key = None
-            ml_indent = None
-            rest = content[2:].strip()
-            if rest and ":" in rest:
-                key, _, val = rest.partition(":")
-                val = val.strip()
-                if _ and val == "|":
-                    ml_key = key.strip()
-                    current[key.strip()] = ""
-                elif _ and val:
-                    current[key.strip()] = _unquote_yaml(val)
-            continue
-
-        # key: value line
-        if ":" in content:
-            key, _, val = content.partition(":")
-            key = key.strip()
-            val = val.strip()
-
-            if not val:
-                # Section header (queue:, task:, result:) -> skip
-                continue
-
-            if val == "|":
-                # Multi-line block scalar start
-                if current is None:
-                    current = {}
-                ml_key = key
-                ml_indent = None
-                current[key] = ""
-                continue
-
-            # Regular key: value
-            if current is None:
-                current = {}
-            current[key] = _unquote_yaml(val)
-
-    if current is not None:
-        items.append(current)
+    if isinstance(data, list):
+        # Top-level list
+        for item in data:
+            if isinstance(item, dict):
+                items.append(_normalize_keys(item))
+    elif isinstance(data, dict):
+        if len(data) == 1:
+            # Single top-level key: unwrap container (queue: [...], task: {...})
+            value = next(iter(data.values()))
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        items.append(_normalize_keys(item))
+            elif isinstance(value, dict):
+                items.append(_normalize_keys(value))
+            else:
+                items.append(_normalize_keys(data))
+        else:
+            # Multiple top-level keys: flat dict
+            items.append(_normalize_keys(data))
 
     return items
-
-
-def _unquote_yaml(val):
-    """Remove surrounding quotes from a YAML value."""
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-        return val[1:-1]
-    return val
 
 
 def _extract_md_section(text, heading_keyword):
@@ -728,21 +696,23 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
         except (FileNotFoundError, UnicodeDecodeError):
             return
 
-        items = parse_simple_yaml(text)
+        items = _extract_yaml_items(text)
         for item in items:
             # Skip idle / empty entries
             task_id = item.get("task_id") or item.get("id")
             status = item.get("status", "")
+            if isinstance(status, bool):
+                status = str(status)
             if status == "idle" and not task_id:
                 continue
-            if not task_id or task_id == "null":
+            if not task_id or str(task_id) == "null":
                 continue
 
             action = ""
             for _k in ("command", "description", "action", "summary",
                         "content", "message", "status"):
                 _v = item.get(_k, "")
-                if _v and _v != "null":
+                if _v and str(_v) != "null":
                     action = _v
                     break
             entries.append({
@@ -759,9 +729,9 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                     else None
                 ),
                 "action": str(action),
-                "task_id": task_id,
+                "task_id": str(task_id),
                 "type": entry_type,
-                "status": status,
+                "status": str(status),
             })
 
     def _parse_dashboard_attention(self, entries):
