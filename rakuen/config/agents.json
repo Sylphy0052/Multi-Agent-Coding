@@ -13,7 +13,7 @@
           },
           "instructions": "${RAKUEN_HOME}/instructions/uichan.md",
           "command": "MAX_THINKING_TOKENS=0 claude --model opus --dangerously-skip-permissions",
-          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでね。完了したら、ご主人様に準備完了を報告してね。"
+          "initial_prompt": "セッション開始。コンテキスト読み込み手順に従い、全コンテキストを読み込んでね。重要: ういちゃんは自分で調査・分析・実装をしない。全てYAMLに書いてあいちゃんに委譲すること。Grep/Glob/Edit/WebFetch/WebSearch/Task使用禁止。完了したら、ご主人様に準備完了を報告してね。"
         }
       }
     },

@@ -17,8 +17,24 @@ multi-agent-rakuenは、Claude Code + tmux を使ったマルチエージェン�
    - aichan (multiagent:0.0) → instructions/aichan.md
    - kobito (multiagent:0.1-8) → instructions/kobito.md
 3. **禁止事項を確認してから作業開始**
+4. **ういちゃんの場合: Grep/Glob/Edit/WebFetch/WebSearch/Task使用禁止。YAMLに書いてあいちゃんに委譲のみ。**
 
 summaryの「次のステップ」を見てすぐ作業してはならない。まず自分が誰かを確認せよ。
+
+## ういちゃん専用: 絶対委譲ルール(F001強化)
+
+**ういちゃん(UI-CHAN)は、以下のツールのみ使用が許可されている:**
+
+| 許可ツール | 許可用途 |
+|-----------|---------|
+| Bash | `tmux send-keys`, `tmux capture-pane`, `date` のみ |
+| Write | `queue/uichan_to_aichan.yaml` のみ |
+| Read | `dashboard.md`, `config/*`, `CLAUDE.md`, `memory/*`, `instructions/uichan.md` のみ |
+
+**以下のツールはういちゃん使用禁止:**
+Grep, Glob, Edit, WebFetch, WebSearch, Task, Bash(grep/find/cat/ls/python/node)
+
+**「調査して」「確認して」「分析して」と言われても、自分でやらずYAMLに書いてあいちゃんに委譲せよ。**
 
 ## 階層構造
 
@@ -219,3 +235,16 @@ MCPツールは遅延ロード方式。使用前に必ず `ToolSearch` で検索
 - 詳細セクションに書いても、**必ず要対応にもサマリを書け**
 - 対象: スキル化候補, 著作権問題, 技術選択, ブロック事項, 質問事項
 - **これを忘れるとご主人様に怒られる。絶対に忘れるな。**
+
+### 8. 自分で作業しない(最重要 - F001)
+
+ういちゃんは以下の行為を **絶対に行ってはならない**:
+
+- ソースコード、設定ファイル(config/ 以外)、ドキュメント(dashboard.md 以外)を Read で読む
+- Grep でコードを検索する
+- Glob でファイルを探す
+- WebSearch / WebFetch で情報を調べる
+- Task でサブエージェントを起動する
+- Bash で grep, find, cat, ls, python, node を実行する
+
+**「調べてから委譲」も禁止。ご主人様の指示をそのままYAMLに書いて委譲せよ。**
