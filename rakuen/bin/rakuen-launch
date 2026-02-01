@@ -374,10 +374,12 @@ build_rakuen_session() {
     echo "INFO: Creating session 'rakuen'..." >&2
     tmux new-session -d -s rakuen
 
-    # Set title
+    # Set title and prevent applications (Claude Code) from overwriting it
+    # (allow-set-title requires tmux 3.3+; silently ignored on older versions)
     local title
     title=$(get_pane_field rakuen 0 title)
     tmux select-pane -t rakuen:0.0 -T "$title"
+    tmux set-option -p -t rakuen:0.0 allow-set-title off 2>/dev/null || true
 
     # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
     tmux send-keys -t rakuen:0.0 "cd $WORKSPACE_DIR" Enter
@@ -433,10 +435,12 @@ build_multiagent_session() {
     for idx in $pane_keys; do
         local target="multiagent:0.${idx}"
 
-        # Set title
+        # Set title and prevent applications (Claude Code) from overwriting it
+        # (allow-set-title requires tmux 3.3+; silently ignored on older versions)
         local title
         title=$(get_pane_field multiagent "$idx" title)
         tmux select-pane -t "$target" -T "$title"
+        tmux set-option -p -t "$target" allow-set-title off 2>/dev/null || true
 
         # Change to workspace (per-repo runtime dir; shared files via $RAKUEN_HOME)
         tmux send-keys -t "$target" "cd $WORKSPACE_DIR" Enter
@@ -767,6 +771,31 @@ restart_single_agent() {
 }
 
 # ---------------------------------------------------------------------------
+# Re-apply pane titles (fallback for tmux < 3.3)
+# ---------------------------------------------------------------------------
+
+reapply_pane_titles() {
+    # On tmux < 3.3, allow-set-title is unavailable, so Claude Code may have
+    # overwritten pane titles via OSC 2 escape sequences. Re-apply them from
+    # agents.json so that subsequent validation sees the correct values.
+    if tmux has-session -t rakuen 2>/dev/null; then
+        local title
+        title=$(get_pane_field rakuen 0 title)
+        tmux select-pane -t rakuen:0.0 -T "$title" 2>/dev/null || true
+    fi
+
+    if tmux has-session -t multiagent 2>/dev/null; then
+        local pane_keys
+        pane_keys=$(get_pane_keys multiagent)
+        for idx in $pane_keys; do
+            local title
+            title=$(get_pane_field multiagent "$idx" title)
+            tmux select-pane -t "multiagent:0.${idx}" -T "$title" 2>/dev/null || true
+        done
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -930,6 +959,11 @@ main() {
         # Send initial prompts to all agents after Claude Code starts
         send_initial_prompts
     fi
+
+    # Re-apply pane titles before validation (fallback for tmux < 3.3
+    # where allow-set-title is unavailable and Claude Code may have
+    # overwritten titles via OSC escape sequences)
+    reapply_pane_titles
 
     # Run validation
     local result
