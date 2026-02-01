@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yaml
@@ -87,6 +88,31 @@ AGENT_LABELS = {
     "kobito7": "Kobito 7",
     "kobito8": "Kobito 8",
 }
+
+# Thread pool for parallel tmux commands
+_TMUX_EXECUTOR = ThreadPoolExecutor(max_workers=10)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _capture_pane_worker(agent, target, lines):
+    """Worker function for parallel pane capture."""
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        text = result.stdout
+    except subprocess.TimeoutExpired:
+        text = "[ERROR: tmux capture-pane timed out]"
+    except FileNotFoundError:
+        text = "[ERROR: tmux not found]"
+    return agent, {"agent": agent, "lines": lines, "text": text}
+
 
 # ---------------------------------------------------------------------------
 # YAML parsing helpers (PyYAML-based)
@@ -1077,7 +1103,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 })
 
     def _handle_panes(self, query_string):
-        """GET /api/panes -> all 10 pane outputs."""
+        """GET /api/panes -> all 10 pane outputs in PARALLEL."""
         params = urllib.parse.parse_qs(query_string)
 
         try:
@@ -1086,22 +1112,16 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             lines = DEFAULT_LINES
         lines = max(MIN_LINES, min(MAX_LINES, lines))
 
-        panes = {}
+        futures = []
         for agent, target in AGENT_MAP.items():
-            try:
-                result = subprocess.run(
-                    ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                text = result.stdout
-            except subprocess.TimeoutExpired:
-                text = "[ERROR: tmux capture-pane timed out]"
-            except FileNotFoundError:
-                text = "[ERROR: tmux not found]"
+            futures.append(
+                _TMUX_EXECUTOR.submit(_capture_pane_worker, agent, target, lines)
+            )
 
-            panes[agent] = {"agent": agent, "lines": lines, "text": text}
+        panes = {}
+        for f in futures:
+            agent, data = f.result()
+            panes[agent] = data
 
         self._send_json({"panes": panes})
 

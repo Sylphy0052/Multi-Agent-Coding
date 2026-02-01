@@ -26,6 +26,7 @@ VERIFY_ONLY=false
 STRICT=false
 CHECK_HEALTH=false
 RESTART_AGENT=""
+_SESSIONS_CREATED=false
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -227,9 +228,10 @@ assignments:
     status: idle
 QEOF
 
-    # Reset kobito task files (1-8)
+    # --- TASK FILES: Create only if missing to preserve state across restarts ---
     for i in $(seq 1 8); do
-        cat > "$WORKSPACE_DIR/queue/tasks/kobito${i}.yaml" << TEOF
+        if [ ! -f "$WORKSPACE_DIR/queue/tasks/kobito${i}.yaml" ]; then
+            cat > "$WORKSPACE_DIR/queue/tasks/kobito${i}.yaml" << TEOF
 # 小人${i}専用タスクファイル
 task:
   task_id: null
@@ -239,17 +241,20 @@ task:
   status: idle
   ts: ""
 TEOF
+        fi
     done
 
-    # Reset kobito report files (1-8)
+    # --- REPORT FILES: Create only if missing ---
     for i in $(seq 1 8); do
-        cat > "$WORKSPACE_DIR/queue/reports/kobito${i}_report.yaml" << REOF
+        if [ ! -f "$WORKSPACE_DIR/queue/reports/kobito${i}_report.yaml" ]; then
+            cat > "$WORKSPACE_DIR/queue/reports/kobito${i}_report.yaml" << REOF
 wid: kobito${i}
 task_id: null
 ts: ""
 status: idle
 result: null
 REOF
+        fi
     done
 
     # Read language setting (check workspace first, then shared config)
@@ -260,7 +265,8 @@ REOF
         lang_setting=$(grep "^language:" "$RAKUEN_HOME/config/settings.yaml" 2>/dev/null | awk '{print $2}' || echo "ja")
     fi
 
-    # Initialize dashboard.md
+    # --- DASHBOARD: Preserve existing dashboard ---
+    if [ ! -f "$WORKSPACE_DIR/dashboard.md" ]; then
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M")
 
@@ -319,6 +325,10 @@ DEOF
 なし (None)
 DEOF
     fi
+        echo "INFO: Created new dashboard.md" >&2
+    else
+        echo "INFO: Preserving existing dashboard.md" >&2
+    fi
 
     # Create workspace config/settings.yaml if not exists (copy from shared)
     if [ ! -f "$WORKSPACE_DIR/config/settings.yaml" ]; then
@@ -365,16 +375,12 @@ from db import init_db
 init_db('$WORKSPACE_DIR')
 " 2>/dev/null && echo "INFO: SQLite database initialized." >&2
 
-        # Insert initial kobito reports (idle)
+        # Insert initial kobito reports ONLY if DB is empty for them.
+        # FIX: Skip upserting 'idle' on restart to preserve persistent state
+        # (e.g. 'done' status should not be reset to 'idle').
         local db_tool="$RAKUEN_HOME/bin/db_tool.py"
         if [ -f "$db_tool" ]; then
-            local ts
-            ts=$(date "+%Y-%m-%dT%H:%M:%S")
-            for i in $(seq 1 8); do
-                RAKUEN_WORKSPACE="$WORKSPACE_DIR" python3 "$db_tool" upsert-report \
-                    --wid "kobito${i}" --task-id "" --status idle --ts "$ts" 2>/dev/null || true
-            done
-            echo "INFO: Initial agent reports inserted." >&2
+            :
         fi
     fi
 
@@ -387,10 +393,11 @@ init_db('$WORKSPACE_DIR')
 
 build_rakuen_session() {
     if tmux has-session -t rakuen 2>/dev/null; then
-        echo "INFO: Session 'rakuen' already exists, killing and recreating." >&2
-        tmux kill-session -t rakuen
+        echo "INFO: Session 'rakuen' already exists. Skipping creation." >&2
+        return
     fi
 
+    _SESSIONS_CREATED=true
     echo "INFO: Creating session 'rakuen'..." >&2
     tmux new-session -d -s rakuen
 
@@ -423,10 +430,11 @@ build_rakuen_session() {
 
 build_multiagent_session() {
     if tmux has-session -t multiagent 2>/dev/null; then
-        echo "INFO: Session 'multiagent' already exists, killing and recreating." >&2
-        tmux kill-session -t multiagent
+         echo "INFO: Session 'multiagent' already exists. Skipping creation." >&2
+         return
     fi
 
+    _SESSIONS_CREATED=true
     echo "INFO: Creating session 'multiagent'..." >&2
     tmux new-session -d -s multiagent -n "agents"
 
@@ -573,6 +581,13 @@ send_prompt_with_retry() {
 # Wait for all Claude Code instances to be ready, then send initial prompts.
 # Reads initial_prompt from agents.json for each pane.
 send_initial_prompts() {
+    # FIX: Skip initial prompts if sessions already existed (not newly created)
+    # to prevent duplicate commands being sent to already-running agents.
+    if [ "$_SESSIONS_CREATED" = false ]; then
+        echo "INFO: Sessions already existed. Skipping initial prompts to prevent duplicate commands." >&2
+        return 0
+    fi
+
     echo "INFO: Waiting for Claude Code instances to be ready..." >&2
 
     # Collect all targets and their prompts

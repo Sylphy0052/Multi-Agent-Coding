@@ -11,17 +11,27 @@ import re
 
 
 # ---------------------------------------------------------------------------
-# Default dangerous patterns
+# Strict dangerous patterns
 # ---------------------------------------------------------------------------
 
+# FIX: Require start of line or command separator (;, |, &&) before
+# dangerous commands. This prevents false positives when agents merely
+# *discuss* or *explain* dangerous commands in conversational text.
+PREFIX = r"(^|[;|&]\s*)"
+
 DANGEROUS_PATTERNS = [
-    r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+/",
-    r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+~",
-    r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+\$HOME",
-    r"mkfs\.",
-    r"dd\s+.*of=/dev/",
-    r">\s*/dev/sd",
-    r"chmod\s+-R\s+777\s+/",
+    # rm -rf / or ~ or $HOME
+    PREFIX + r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+/",
+    PREFIX + r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+~",
+    PREFIX + r"rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|--recursive)\s+\$HOME",
+    # Filesystem destruction
+    PREFIX + r"mkfs\.",
+    PREFIX + r"dd\s+.*of=/dev/",
+    # Raw device writing
+    PREFIX + r">\s*/dev/sd",
+    # Recursive chmod 777 on root
+    PREFIX + r"chmod\s+-R\s+777\s+/",
+    # Fork bomb
     r":\(\)\s*\{\s*:\|:&\s*\}\s*;",
 ]
 
@@ -59,7 +69,8 @@ def validate_command(text, log_dir=None, extra_patterns=None):
 
     for pattern in all_patterns:
         try:
-            if re.search(pattern, text, re.IGNORECASE):
+            # Use MULTILINE to match start-of-line (^) in script blocks
+            if re.search(pattern, text, re.IGNORECASE | re.MULTILINE):
                 reason = f"Matched dangerous pattern: {pattern}"
                 _log_blocked(text, reason, log_dir)
                 return False, reason
