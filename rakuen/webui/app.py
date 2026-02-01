@@ -16,6 +16,7 @@ import datetime
 import http.server
 import json
 import os
+import queue as queue_module
 import re
 import subprocess
 import sys
@@ -25,6 +26,18 @@ import urllib.parse
 from pathlib import Path
 
 import yaml
+
+# Local imports (db, command_validator)
+_webui_dir = os.path.dirname(os.path.abspath(__file__))
+if _webui_dir not in sys.path:
+    sys.path.insert(0, _webui_dir)
+
+from db import (  # noqa: E402
+    init_db, get_db, get_all_activity, get_all_tasks, get_all_reports,
+    get_all_user_inputs, get_all_commands, get_max_activity_rowid,
+    get_activity_since_rowid,
+)
+from command_validator import validate_command  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -204,6 +217,22 @@ _last_health = {}               # cached health check results
 _last_health_lock = threading.Lock()
 _watchdog_enabled = True
 _LOG_FILE = None
+
+# SSE state
+_sse_clients = []               # list of queue.Queue instances
+_sse_clients_lock = threading.Lock()
+_last_activity_rowid = 0
+_last_dashboard_mtime = 0.0
+
+# Enhanced watchdog state (Phase 3.2)
+_agent_output_history = {}      # {agent: [last_outputs]}
+_agent_error_counts = {}        # {agent: count}
+_agent_last_output_ts = {}      # {agent: timestamp}
+_watchdog_cooldowns = {}        # {agent: last_intervention_ts}
+WATCHDOG_COOLDOWN = 300         # 5 minutes between interventions per agent
+LOOP_DETECT_COUNT = 3           # same output N times = infinite loop
+ERROR_DETECT_COUNT = 5          # consecutive errors before restart
+INACTIVITY_TIMEOUT = 600        # 10 minutes without output
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +416,107 @@ def _watchdog_loop():
                         f"Watchdog: tmux session for '{agent_name}' is missing."
                         " Cannot auto-restart.",
                     )
+                elif info["status"] == "alive" and not _is_in_cooldown(agent_name):
+                    # Enhanced watchdog: check for loops, errors, inactivity
+                    output = _capture_pane_output(agent_name)
+                    if _detect_infinite_loop(agent_name, output):
+                        _log("WARN", f"Watchdog: infinite loop detected for '{agent_name}'. Sending Ctrl+C.")
+                        _send_ctrl_c(agent_name)
+                        _record_intervention(agent_name)
+                    elif _detect_error_loop(agent_name, output):
+                        _log("WARN", f"Watchdog: error loop detected for '{agent_name}'. Restarting.")
+                        _restart_agent(agent_name)
+                        _record_intervention(agent_name)
+                        _agent_error_counts[agent_name] = 0
+                    elif _detect_inactivity(agent_name, output):
+                        _log("WARN", f"Watchdog: inactivity detected for '{agent_name}'. Sending Ctrl+C.")
+                        _send_ctrl_c(agent_name)
+                        _record_intervention(agent_name)
         except Exception as e:
             _log("ERROR", f"Watchdog: unexpected error: {e}")
 
         time.sleep(WATCHDOG_INTERVAL)
+
+
+def _is_in_cooldown(agent_name):
+    """Check if agent is in watchdog intervention cooldown."""
+    last_ts = _watchdog_cooldowns.get(agent_name, 0)
+    return (time.time() - last_ts) < WATCHDOG_COOLDOWN
+
+
+def _record_intervention(agent_name):
+    """Record a watchdog intervention timestamp."""
+    _watchdog_cooldowns[agent_name] = time.time()
+
+
+def _capture_pane_output(agent_name, lines=30):
+    """Capture recent pane output for an agent."""
+    target = AGENT_MAP.get(agent_name)
+    if not target:
+        return ""
+    try:
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-t", target, "-p", "-S", f"-{lines}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ""
+
+
+def _detect_infinite_loop(agent_name, output):
+    """Detect infinite loop by checking if last N outputs are identical."""
+    history = _agent_output_history.setdefault(agent_name, [])
+    # Only store last 50 chars as fingerprint
+    fingerprint = output[-200:] if output else ""
+    history.append(fingerprint)
+    if len(history) > LOOP_DETECT_COUNT + 1:
+        history.pop(0)
+    if len(history) >= LOOP_DETECT_COUNT:
+        recent = history[-LOOP_DETECT_COUNT:]
+        if all(r == recent[0] for r in recent) and recent[0]:
+            return True
+    return False
+
+
+def _detect_error_loop(agent_name, output):
+    """Detect error loop by counting consecutive error patterns."""
+    error_patterns = ["Error", "error", "failed", "Failed", "FAILED",
+                      "Traceback", "Exception"]
+    has_error = any(p in output for p in error_patterns) if output else False
+    if has_error:
+        _agent_error_counts[agent_name] = _agent_error_counts.get(agent_name, 0) + 1
+    else:
+        _agent_error_counts[agent_name] = 0
+    return _agent_error_counts.get(agent_name, 0) >= ERROR_DETECT_COUNT
+
+
+def _detect_inactivity(agent_name, output):
+    """Detect inactivity (no output change for INACTIVITY_TIMEOUT seconds)."""
+    now = time.time()
+    prev_output = _agent_output_history.get(agent_name, [""])[0] if agent_name in _agent_output_history else ""
+    if output != prev_output:
+        _agent_last_output_ts[agent_name] = now
+        return False
+    last_ts = _agent_last_output_ts.get(agent_name, now)
+    if last_ts == 0:
+        _agent_last_output_ts[agent_name] = now
+        return False
+    return (now - last_ts) > INACTIVITY_TIMEOUT
+
+
+def _send_ctrl_c(agent_name):
+    """Send Ctrl+C to an agent's tmux pane."""
+    target = AGENT_MAP.get(agent_name)
+    if not target:
+        return
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", target, "C-c"],
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
 
 
 def _start_watchdog():
@@ -398,6 +524,88 @@ def _start_watchdog():
     thread = threading.Thread(target=_watchdog_loop, daemon=True, name="watchdog")
     thread.start()
     _log("INFO", "Watchdog thread started.")
+
+
+# ---------------------------------------------------------------------------
+# SSE poller
+# ---------------------------------------------------------------------------
+
+def _sse_push(event_data):
+    """Push event data to all connected SSE clients."""
+    with _sse_clients_lock:
+        dead = []
+        for i, q in enumerate(_sse_clients):
+            try:
+                q.put_nowait(event_data)
+            except queue_module.Full:
+                dead.append(i)
+        for i in reversed(dead):
+            _sse_clients.pop(i)
+
+
+def _sse_poller_loop():
+    """Background poller that pushes SSE events on data changes."""
+    global _last_activity_rowid, _last_dashboard_mtime
+
+    time.sleep(5)  # Wait for server startup
+    _log("INFO", "SSE poller: started.")
+
+    health_counter = 0
+
+    while True:
+        try:
+            # Check activity changes
+            try:
+                db = get_db(WORKSPACE_DIR)
+                current_rowid = get_max_activity_rowid(db)
+                if current_rowid > _last_activity_rowid:
+                    new_entries = get_activity_since_rowid(db, _last_activity_rowid)
+                    if new_entries:
+                        _sse_push(json.dumps({
+                            "type": "activity",
+                            "entries": new_entries,
+                        }))
+                    _last_activity_rowid = current_rowid
+                db.close()
+            except Exception:
+                pass
+
+            # Check dashboard.md changes
+            dashboard_path = os.path.join(WORKSPACE_DIR, "dashboard.md")
+            try:
+                mtime = os.path.getmtime(dashboard_path)
+                if mtime > _last_dashboard_mtime:
+                    _last_dashboard_mtime = mtime
+                    _sse_push(json.dumps({
+                        "type": "dashboard",
+                        "mtime": mtime,
+                    }))
+            except OSError:
+                pass
+
+            # Push agent health periodically (every ~30s)
+            health_counter += 1
+            if health_counter >= 30:
+                health_counter = 0
+                with _last_health_lock:
+                    health = dict(_last_health)
+                if health:
+                    _sse_push(json.dumps({
+                        "type": "agent_health",
+                        "data": {k: v for k, v in health.items()},
+                    }))
+
+        except Exception as e:
+            _log("ERROR", f"SSE poller error: {e}")
+
+        time.sleep(1)
+
+
+def _start_sse_poller():
+    """Start the SSE poller daemon thread."""
+    thread = threading.Thread(target=_sse_poller_loop, daemon=True, name="sse-poller")
+    thread.start()
+    _log("INFO", "SSE poller thread started.")
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +638,8 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             self._handle_dashboard()
         elif path == "/api/agents/health":
             self._handle_agents_health()
+        elif path == "/api/events":
+            self._handle_events()
         elif path == "/" or path == "/index.html":
             self._serve_static("index.html")
         elif path.startswith("/static/"):
@@ -564,6 +774,13 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             self._send_error(413, f"Text too large. Maximum: {MAX_SEND_BYTES} bytes")
             return
 
+        # Command validation
+        log_dir = os.path.join(WORKSPACE_DIR, "logs") if WORKSPACE_DIR else None
+        is_safe, reason = validate_command(text, log_dir)
+        if not is_safe:
+            self._send_error(400, f"Blocked: {reason}")
+            return
+
         # Send to uichan (always rakuen:0.0)
         # Use 2-bash-call pattern: text first, then Enter separately
         try:
@@ -615,8 +832,42 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             self._send_json({"presets": [], "error": "Invalid presets.json"})
 
     def _handle_activity(self):
-        """GET /api/activity -> activity timeline entries from YAML files."""
+        """GET /api/activity -> activity timeline entries.
+
+        Reads from SQLite first, falls back to YAML files.
+        Supports ?since=ISO8601 for differential fetch.
+        """
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        since = params.get("since", [None])[0]
+
         entries = []
+
+        # --- SQLite path ---
+        try:
+            db = get_db(WORKSPACE_DIR)
+            db_entries = get_all_activity(db, since=since)
+            for item in db_entries:
+                entries.append({
+                    "timestamp": item.get("ts"),
+                    "from": item.get("agent", ""),
+                    "from_label": AGENT_LABELS.get(
+                        item.get("agent", ""), item.get("agent", "")
+                    ),
+                    "to": None,
+                    "to_label": None,
+                    "action": item.get("action", ""),
+                    "task_id": item.get("task_id"),
+                    "type": "progress",
+                    "status": item.get("status", ""),
+                })
+            db.close()
+        except Exception:
+            pass
+
+        # --- YAML fallback (migration period) ---
+        seen_ids = {e.get("task_id") for e in entries if e.get("task_id")}
+        yaml_entries = []
 
         # 0. User -> UI-chan inputs
         self._parse_yaml_entries(
@@ -624,7 +875,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             entry_type="user_input",
             from_agent="user",
             to_agent="uichan",
-            entries=entries,
+            entries=yaml_entries,
         )
 
         # 1. UI-chan -> AI-chan commands
@@ -633,7 +884,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             entry_type="command",
             from_agent="uichan",
             to_agent="aichan",
-            entries=entries,
+            entries=yaml_entries,
         )
 
         # 2. AI-chan -> Kobito N task assignments
@@ -643,7 +894,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 entry_type="assignment",
                 from_agent="aichan",
                 to_agent=f"kobito{n}",
-                entries=entries,
+                entries=yaml_entries,
             )
 
         # 3. Kobito N reports
@@ -653,11 +904,11 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 entry_type="report",
                 from_agent=f"kobito{n}",
                 to_agent=None,
-                entries=entries,
+                entries=yaml_entries,
             )
 
         # 4. Dashboard attention items (要対応 / 伺い事項)
-        self._parse_dashboard_attention(entries)
+        self._parse_dashboard_attention(yaml_entries)
 
         # 5. AI-chan activity log
         self._parse_yaml_entries(
@@ -665,7 +916,7 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
             entry_type="progress",
             from_agent="aichan",
             to_agent=None,
-            entries=entries,
+            entries=yaml_entries,
         )
 
         # 6. Kobito N activity logs
@@ -677,8 +928,20 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
                 entry_type="progress",
                 from_agent=f"kobito{n}",
                 to_agent=None,
-                entries=entries,
+                entries=yaml_entries,
             )
+
+        # Merge: add YAML entries not already in SQLite results
+        for e in yaml_entries:
+            tid = e.get("task_id")
+            if tid and tid in seen_ids:
+                continue
+            # Apply since filter to YAML entries too
+            if since and e.get("timestamp") and e["timestamp"] <= since:
+                continue
+            entries.append(e)
+            if tid:
+                seen_ids.add(tid)
 
         # Sort by timestamp ascending; null timestamps go to end
         entries.sort(key=lambda e: (
@@ -687,6 +950,60 @@ class RakuenHandler(http.server.BaseHTTPRequestHandler):
         ))
 
         self._send_json({"entries": entries})
+
+    def _handle_events(self):
+        """GET /api/events -> Server-Sent Events stream."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        # Support Last-Event-ID for reconnection
+        last_id = self.headers.get("Last-Event-ID")
+        if last_id:
+            try:
+                # Send missed events since last_id
+                db = get_db(WORKSPACE_DIR)
+                entries = get_activity_since_rowid(db, int(last_id))
+                db.close()
+                if entries:
+                    data = json.dumps({
+                        "type": "activity",
+                        "entries": entries,
+                    })
+                    self.wfile.write(f"data: {data}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+            except Exception:
+                pass
+
+        # Register this client
+        client_queue = queue_module.Queue(maxsize=100)
+        with _sse_clients_lock:
+            _sse_clients.append(client_queue)
+
+        try:
+            event_id = 0
+            while True:
+                try:
+                    data = client_queue.get(timeout=15)
+                    event_id += 1
+                    msg = f"id: {event_id}\ndata: {data}\n\n"
+                    self.wfile.write(msg.encode("utf-8"))
+                    self.wfile.flush()
+                except queue_module.Empty:
+                    # Send keepalive comment
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            with _sse_clients_lock:
+                try:
+                    _sse_clients.remove(client_queue)
+                except ValueError:
+                    pass
 
     def _parse_yaml_entries(self, filepath, entry_type, from_agent, to_agent, entries):
         """Parse a YAML file and append activity entries."""
@@ -952,16 +1269,27 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     _LOG_FILE = os.path.join(log_dir, "watchdog.log")
 
+    # Initialize SQLite database
+    try:
+        init_db(WORKSPACE_DIR)
+        sys.stderr.write(f"[RakuenWebUI] SQLite DB initialized: {WORKSPACE_DIR}/rakuen.db\n")
+    except Exception as e:
+        sys.stderr.write(f"[RakuenWebUI] WARNING: DB init failed (non-fatal): {e}\n")
+
     # Determine starting port
     port_start = int(os.environ.get("PORT_START", str(PORT_RANGE_START)))
 
-    # Try ports in range
+    # Try ports in range (use ThreadingHTTPServer for SSE support)
     server = None
     actual_port = None
 
+    class ThreadingServer(http.server.ThreadingHTTPServer):
+        """Threaded HTTP server for concurrent SSE + API requests."""
+        daemon_threads = True
+
     for port in range(port_start, PORT_RANGE_END + 1):
         try:
-            server = http.server.HTTPServer((BIND_HOST, port), RakuenHandler)
+            server = ThreadingServer((BIND_HOST, port), RakuenHandler)
             actual_port = port
             break
         except OSError:
@@ -983,6 +1311,9 @@ def main():
 
     # Start watchdog thread
     _start_watchdog()
+
+    # Start SSE poller thread
+    _start_sse_poller()
 
     try:
         server.serve_forever()

@@ -358,6 +358,26 @@ PEOF
         fi
     fi
 
+    # Initialize SQLite database
+    if command -v python3 &>/dev/null; then
+        PYTHONPATH="$RAKUEN_HOME/webui" python3 -c "
+from db import init_db
+init_db('$WORKSPACE_DIR')
+" 2>/dev/null && echo "INFO: SQLite database initialized." >&2
+
+        # Insert initial kobito reports (idle)
+        local db_tool="$RAKUEN_HOME/bin/db_tool.py"
+        if [ -f "$db_tool" ]; then
+            local ts
+            ts=$(date "+%Y-%m-%dT%H:%M:%S")
+            for i in $(seq 1 8); do
+                RAKUEN_WORKSPACE="$WORKSPACE_DIR" python3 "$db_tool" upsert-report \
+                    --wid "kobito${i}" --task-id "" --status idle --ts "$ts" 2>/dev/null || true
+            done
+            echo "INFO: Initial agent reports inserted." >&2
+        fi
+    fi
+
     echo "INFO: Workspace initialization complete." >&2
 }
 

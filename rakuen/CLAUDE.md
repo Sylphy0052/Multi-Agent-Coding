@@ -7,6 +7,36 @@
 multi-agent-rakuenは、Claude Code + tmux を使ったマルチエージェント並列開発基盤である。
 美少女チームの階層構造で、複数のプロジェクトを並行管理できる。
 
+## コア・プロトコル
+
+以下の3規定は全エージェントの行動を統制する「憲法」である。例外なく遵守せよ。
+
+### Protocol: 2-Step Send-Keys
+
+tmux send-keys は必ず「メッセージ送信」と「Enter送信」の2ステップに分割する。
+
+**正しい例**:
+```bash
+tmux send-keys -t target "msg"
+tmux send-keys -t target Enter
+```
+
+**禁止**: `tmux send-keys -t target "msg" Enter` (1行書き)
+
+**理由**: 1行で書くと、メッセージ入力中にEnterが処理され、指示が途切れる事故を防ぐため。
+
+### Format: ISO8601 Time
+
+日時は必ず `date "+%Y-%m-%dT%H:%M:%S"` (例: 2026-02-01T12:00:00) を使用する。
+
+**理由**: 言語依存("2月1日"など)を排除し、ログ解析を容易にするため。
+
+### Style: Directive Style
+
+instructions/*.md は「です・ます」調や情緒的な表現を排除する。設定ファイル的な記述(Directive)に統一し、トークン消費を最小化する。
+
+**例外**: 出力例(Examples)にはペルソナ(口調)を含め、キャラクター性を維持する。
+
 ## コンパクション復帰時(全エージェント必須)
 
 コンパクション後は作業前に必ず以下を実行せよ:

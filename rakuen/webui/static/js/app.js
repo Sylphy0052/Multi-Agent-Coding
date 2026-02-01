@@ -9,6 +9,9 @@ import { initSettingsModal } from './components/settings-modal.js';
 
 let dataTimer = null;
 let statusTimer = null;
+let eventSource = null;
+let sseErrorCount = 0;
+const SSE_MAX_ERRORS = 3;
 
 function startPolling() {
   stopPolling();
@@ -135,6 +138,59 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// SSE (Server-Sent Events) support
+// ---------------------------------------------------------------------------
+
+function initSSE() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+
+  eventSource = api.connectSSE(
+    (data) => {
+      sseErrorCount = 0;
+      if (data.type === 'activity' && data.entries) {
+        // Merge new entries into existing state
+        const existing = state.get('activityEntries') || [];
+        const existingIds = new Set(existing.map(e => e.task_id).filter(Boolean));
+        const newEntries = data.entries.filter(e => !existingIds.has(e.task_id));
+        if (newEntries.length > 0) {
+          state.set('activityEntries', [...existing, ...newEntries]);
+        }
+      } else if (data.type === 'agent_health' && data.data) {
+        state.set('agentHealth', data.data);
+      } else if (data.type === 'dashboard') {
+        // Dashboard changed, refetch content
+        api.fetchDashboard().then(d => state.set('dashboardContent', d.content));
+      }
+    },
+    (err) => {
+      sseErrorCount++;
+      if (sseErrorCount >= SSE_MAX_ERRORS) {
+        console.warn('SSE: too many errors, falling back to polling.');
+        fallbackToPolling();
+      }
+    }
+  );
+
+  // Stop data polling while SSE is active (keep status polling)
+  if (dataTimer !== null) {
+    clearInterval(dataTimer);
+    dataTimer = null;
+  }
+}
+
+function fallbackToPolling() {
+  if (eventSource) {
+    eventSource.close();
+    eventSource = null;
+  }
+  sseErrorCount = 0;
+  startPolling();
+}
+
 // Initialize on DOM ready
 document.addEventListener('DOMContentLoaded', () => {
   // 1. Load and apply settings
@@ -155,6 +211,17 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchAndUpdatePresets();
   fetchAndUpdateAgentHealth();
 
-  // 4. Start polling
-  startPolling();
+  // 4. Try SSE first, fallback to polling
+  try {
+    initSSE();
+    // Keep status polling (SSE doesn't replace it fully)
+    statusTimer = setInterval(() => {
+      if (getSettings().autoRefresh) {
+        fetchAndUpdateStatus();
+      }
+    }, 30000);
+  } catch (e) {
+    console.warn('SSE init failed, using polling:', e);
+    startPolling();
+  }
 });

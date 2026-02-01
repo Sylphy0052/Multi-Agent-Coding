@@ -136,3 +136,24 @@ export async function sendCommand(text) {
     return { error: err.message };
   }
 }
+
+/**
+ * Connect to SSE endpoint for real-time updates.
+ * @param {Function} onMessage - callback for each SSE message (parsed JSON)
+ * @param {Function} onError - callback for SSE errors
+ * @returns {EventSource}
+ */
+export function connectSSE(onMessage, onError) {
+  const es = new EventSource("/api/events");
+  es.onmessage = (e) => {
+    try {
+      onMessage(JSON.parse(e.data));
+    } catch (err) {
+      console.error("SSE parse error:", err);
+    }
+  };
+  es.onerror = (e) => {
+    if (onError) onError(e);
+  };
+  return es;
+}
