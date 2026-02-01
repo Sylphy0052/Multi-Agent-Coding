@@ -104,9 +104,14 @@ parse_args() {
 # ---------------------------------------------------------------------------
 setup_venv() {
     local venv_dir="$RAKUEN_HOME/.venv"
+    local req_file="$RAKUEN_HOME/webui/requirements.txt"
     if [ ! -d "$venv_dir" ]; then
         echo "INFO: Creating Python virtual environment at $venv_dir ..." >&2
         python3 -m venv "$venv_dir"
+    fi
+    # Install/update dependencies from requirements.txt
+    if [ -f "$req_file" ]; then
+        "$venv_dir/bin/pip" install -q -r "$req_file" >&2
     fi
 }
 
